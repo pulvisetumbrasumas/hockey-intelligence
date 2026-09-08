@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Test / tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local configuration (sample is committed as .env_sample)
+.env
+
+# Runtime data
+*.db
+*.sqlite3
+*.sqlite
+
+# Misc
+.DS_Store

@@ -1,0 +1,358 @@
+from sqlalchemy import select, func, case
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.player import Player
+from app.models.stats import PlayerSeasonStats, GoalieSeasonStats
+from app.models.stats_team import TeamSeasonStats
+
+DIMENSIONS = {
+    "offense": {
+        "label": "Offense",
+        "metrics": ["goals", "assists", "points", "points_per_game"],
+    },
+    "defense": {
+        "label": "Defense",
+        "metrics": ["plus_minus", "blocked_shots", "takeaways", "hits"],
+    },
+    "puck_skill": {
+        "label": "Puck Skill",
+        "metrics": ["time_on_ice_per_game", "faceoff_win_pct", "shooting_pct"],
+    },
+    "efficiency": {
+        "label": "Efficiency",
+        "metrics": ["points_per_game", "shooting_pct", "faceoff_win_pct"],
+    },
+    "durability": {
+        "label": "Durability",
+        "metrics": ["games_played"],
+    },
+}
+
+
+class StatisticsEngine:
+    """Deterministic calculation layer.
+
+    All calculated statistics live here. The AI layer consumes these
+    results and explains them; it never computes them itself.
+    """
+
+    def __init__(self, session: AsyncSession):
+        self.session = session
+
+    async def get_player_career_stats(self, player_id: int) -> dict:
+        skater = await self._aggregate_skater(
+            PlayerSeasonStats, player_id, game_type=2
+        )
+        playoff_skater = await self._aggregate_skater(
+            PlayerSeasonStats, player_id, game_type=3
+        )
+        goalie = await self._aggregate_goalie(
+            GoalieSeasonStats, player_id, game_type=2
+        )
+        playoff_goalie = await self._aggregate_goalie(
+            GoalieSeasonStats, player_id, game_type=3
+        )
+        return {
+            "player_id": player_id,
+            "regular_season": skater,
+            "regular_season_goalie": goalie,
+            "playoffs": playoff_skater,
+            "playoffs_goalie": playoff_goalie,
+        }
+
+    async def get_player_season_stats(
+        self, player_id: int, season_id: int
+    ) -> dict | None:
+        result = await self.session.execute(
+            select(PlayerSeasonStats)
+            .where(
+                PlayerSeasonStats.player_id == player_id,
+                PlayerSeasonStats.season_id == season_id,
+                PlayerSeasonStats.game_type == 2,
+            )
+            .limit(1)
+        )
+        skater = result.scalar_one_or_none()
+
+        goalie_result = await self.session.execute(
+            select(GoalieSeasonStats)
+            .where(
+                GoalieSeasonStats.player_id == player_id,
+                GoalieSeasonStats.season_id == season_id,
+                GoalieSeasonStats.game_type == 2,
+            )
+            .limit(1)
+        )
+        goalie = goalie_result.scalar_one_or_none()
+
+        if not skater and not goalie:
+            return None
+        return {
+            "player_id": player_id,
+            "season_id": season_id,
+            "skater": self._row_to_dict(skater) if skater else None,
+            "goalie": (
+                {
+                    "games_played": goalie.games_played,
+                    "wins": goalie.wins,
+                    "losses": goalie.losses,
+                    "shutouts": goalie.shutouts,
+                    "save_pct": goalie.save_pct,
+                    "goals_against_average": goalie.goals_against_average,
+                }
+                if goalie
+                else None
+            ),
+        }
+
+    async def get_player_goalie_stats(self, player_id: int) -> dict | None:
+        result = await self.session.execute(
+            select(GoalieSeasonStats)
+            .where(GoalieSeasonStats.player_id == player_id)
+            .order_by(GoalieSeasonStats.season_id)
+        )
+        rows = result.scalars().all()
+        return {
+            "career": {
+                "games_played": sum(r.games_played or 0 for r in rows),
+                "wins": sum(r.wins or 0 for r in rows),
+                "shutouts": sum(r.shutouts or 0 for r in rows),
+                "save_pct": self._weighted_avg(
+                    [r.save_pct for r in rows if r.save_pct is not None],
+                    [r.shots_against or 0 for r in rows if r.save_pct is not None],
+                ),
+                "gaa": self._weighted_avg(
+                    [r.goals_against_average for r in rows if r.goals_against_average is not None],
+                    [r.time_on_ice or 0 for r in rows if r.goals_against_average is not None],
+                ),
+            }
+        }
+
+    async def _aggregate_skater(
+        self, model, player_id: int, game_type: int = 2
+    ) -> dict:
+        stmt = select(model).where(
+            model.player_id == player_id,
+            model.game_type == game_type,
+        )
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        if not rows:
+            return {}
+
+        seasons = sum(1 for r in rows if (r.games_played or 0) > 0)
+        games = sum(r.games_played or 0 for r in rows)
+        goals = sum(r.goals or 0 for r in rows)
+        assists = sum(r.assists or 0 for r in rows)
+        points = goals + assists
+        points_per_game = round(points / games, 3) if games else None
+
+        return {
+            "games_played": games,
+            "goals": goals,
+            "assists": assists,
+            "points": points,
+            "points_per_game": points_per_game,
+            "plus_minus": sum(r.plus_minus or 0 for r in rows),
+            "penalty_minutes": sum(r.penalty_minutes or 0 for r in rows),
+            "game_winning_goals": sum(r.game_winning_goals or 0 for r in rows),
+            "ot_goals": sum(r.ot_goals or 0 for r in rows),
+            "power_play_goals": sum(r.pp_goals or 0 for r in rows),
+            "shorthanded_goals": sum(r.sh_goals or 0 for r in rows),
+            "shots": sum(r.shots or 0 for r in rows),
+            "seasons_played": seasons,
+        }
+
+    async def _aggregate_goalie(
+        self, model, player_id: int, game_type: int = 2
+    ) -> dict:
+        stmt = select(model).where(
+            model.player_id == player_id,
+            model.game_type == game_type,
+        )
+        result = await self.session.execute(stmt)
+        rows = result.scalars().all()
+        if not rows:
+            return {}
+
+        saves = sum(r.saves or 0 for r in rows)
+        shots_against = sum(r.shots_against or 0 for r in rows)
+        return {
+            "games_played": sum(r.games_played or 0 for r in rows),
+            "games_started": sum(r.games_started or 0 for r in rows),
+            "wins": sum(r.wins or 0 for r in rows),
+            "losses": sum(r.losses or 0 for r in rows),
+            "ot_losses": sum(r.ot_losses or 0 for r in rows),
+            "shutouts": sum(r.shutouts or 0 for r in rows),
+            "goals_against": sum(r.goals_against or 0 for r in rows),
+            "shots_against": shots_against,
+            "saves": saves,
+            "save_pct": round(saves / shots_against, 4) if shots_against else None,
+            "goals_against_average": (
+                round(
+                    sum(r.goals_against_average or 0 for r in rows) / len(rows), 3
+                )
+                if rows
+                else None
+            ),
+            "seasons_played": len(rows),
+        }
+
+    @staticmethod
+    def _row_to_dict(row) -> dict:
+        return {
+            "games_played": row.games_played,
+            "goals": row.goals,
+            "assists": row.assists,
+            "points": row.points,
+            "points_per_game": row.points_per_game,
+            "plus_minus": row.plus_minus,
+            "penalty_minutes": row.penalty_minutes,
+            "power_play_goals": row.pp_goals,
+            "shorthanded_goals": row.sh_goals,
+            "game_winning_goals": row.game_winning_goals,
+            "shots": row.shots,
+            "shooting_pct": row.shooting_pct,
+            "faceoff_win_pct": row.faceoff_win_pct,
+            "time_on_ice_per_game": row.time_on_ice_per_game,
+            "hits": row.hits,
+            "blocked_shots": row.blocked_shots,
+            "takeaways": row.takeaways,
+        }
+
+    @staticmethod
+    def _weighted_avg(values: list, weights: list):
+        if not values:
+            return None
+        total_w = sum(weights)
+        if total_w == 0:
+            return round(sum(values) / len(values), 4)
+        return round(sum(v * w for v, w in zip(values, weights)) / total_w, 4)
+
+    async def compare_players(
+        self, player_ids: list[int], dimensions: list[str] | None = None
+    ) -> dict:
+        """Multi-dimensional player comparison.
+
+        Returns evidence per dimension rather than a single ranking.
+        """
+        dims = dimensions or ["offense", "defense", "puck_skill", "durability"]
+        players_stat = {}
+        for pid in player_ids:
+            players_stat[pid] = await self.get_player_career_stats(pid)
+
+        comparison = {
+            "dimensions": dims,
+            "players": [],
+            "notes": [],
+        }
+
+        for pid in player_ids:
+            profile = await self.session.get(Player, pid)
+            rs = players_stat[pid].get("regular_season") or {}
+            comparison["players"].append(
+                {
+                    "player_id": pid,
+                    "name": profile.full_name if profile else str(pid),
+                    "position": profile.position_code if profile else None,
+                    "games_played": rs.get("games_played"),
+                    "goals": rs.get("goals"),
+                    "assists": rs.get("assists"),
+                    "points": rs.get("points"),
+                    "points_per_game": rs.get("points_per_game"),
+                    "plus_minus": rs.get("plus_minus"),
+                    "seasons_played": rs.get("seasons_played"),
+                    "power_play_goals": rs.get("power_play_goals"),
+                    "shorthanded_goals": rs.get("shorthanded_goals"),
+                    "game_winning_goals": rs.get("game_winning_goals"),
+                }
+            )
+
+        # Per-dimension evidence
+        evidence = {}
+        for dim in dims:
+            evidence[dim] = self._dimension_evidence(player_ids, players_stat, dim)
+
+        comparison["evidence"] = evidence
+        comparison["notes"] = self._comparison_notes(player_ids, players_stat)
+        return comparison
+
+    def _dimension_evidence(self, player_ids, players_stat, dimension: str) -> dict:
+        base_metrics = {
+            "offense": ["goals", "assists", "points", "points_per_game"],
+            "defense": ["plus_minus"],
+            "puck_skill": ["shooting_pct"],
+            "durability": ["games_played", "seasons_played"],
+            "efficiency": ["points_per_game", "shooting_pct"],
+        }
+        metrics = base_metrics.get(dimension, ["points"])
+        leaders = {}
+        for m in metrics:
+            values = {}
+            for pid in player_ids:
+                rs = (players_stat[pid].get("regular_season") or {}).get(m, 0)
+                values[pid] = round(rs, 3) if rs is not None else None
+            leaders[m] = values
+        return {
+            "metric": metrics,
+            "values": leaders,
+            "interpretation": self._dimension_interpretation(dimension),
+        }
+
+    def _comparison_notes(self, player_ids, players_stat) -> list[str]:
+        notes = []
+        if len(player_ids) < 2:
+            return notes
+        stats = [
+            (players_stat[pid].get("regular_season") or {}).get("points") or 0
+            for pid in player_ids
+        ]
+        if len(set(stats)) == 1:
+            notes.append(
+                "The available data does not establish a meaningful difference in "
+                "total scoring between these players."
+            )
+        max_pts = max(stats)
+        leaders = [
+            players_stat[pid]
+            for pid, s in zip(player_ids, stats)
+            if s == max_pts
+        ]
+        return notes
+
+    @staticmethod
+    def _dimension_interpretation(dimension: str) -> str:
+        return {
+            "offense": "Raw offensive production. Which player generated more goals, assists, and points?",
+            "defense": "Available defensive evidence. Plus/minus reflects goal differential while on ice; it does not fully measure defensive reads or positioning.",
+            "puck_skill": "Puck skill proxies available in the data. Shooting percentage, possession-based time on ice, and faceoff performance where present.",
+            "durability": "Games played and seasons sustained at the NHL level.",
+            "efficiency": "Production relative to opportunity: points per game and scoring efficiency.",
+        }.get(
+            dimension,
+            "Dimension requires additional context. Available statistics are limited.",
+        )
+
+    async def get_team_career_history(self, team_id: int) -> dict:
+        result = await self.session.execute(
+            select(TeamSeasonStats)
+            .where(TeamSeasonStats.team_id == team_id)
+            .order_by(TeamSeasonStats.season_id)
+        )
+        rows = result.scalars().all()
+        return {
+            "team_id": team_id,
+            "seasons": [
+                {
+                    "season_id": r.season_id,
+                    "games_played": r.games_played,
+                    "wins": r.wins,
+                    "losses": r.losses,
+                    "ot_losses": r.ot_losses,
+                    "points": r.points,
+                    "goals_for": r.goals_for,
+                    "goals_against": r.goals_against,
+                }
+                for r in rows
+            ],
+        }
