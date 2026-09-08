@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.database.connection import get_db
 from app.models import Champion, Franchise, Season, Team, TeamIdentity
 from app.schemas.common import TeamOut
+from app.services.history import build_team_season_history
 from app.services.images import team_logo_url
 
 router = APIRouter(prefix="/api", tags=["teams"])
@@ -85,6 +86,52 @@ async def get_franchise(franchise_id: int, db: AsyncSession = Depends(get_db)):
             for i in identities
         ],
     }
+
+
+async def _sibling_ids(db: AsyncSession, franchise_id: int) -> set[int]:
+    result = await db.execute(select(Team.id).where(Team.franchise_id == franchise_id))
+    return set(result.scalars().all())
+
+
+@router.get("/teams/{team_id}/seasons")
+async def team_season_history(team_id: int, db: AsyncSession = Depends(get_db)):
+    """Per-season record chart for one club (franchise lineage included)."""
+    team = await db.get(Team, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail=f"Team {team_id} not found.")
+    ids = {team.id}
+    if team.franchise_id:
+        ids.update(await _sibling_ids(db, team.franchise_id))
+    history = await build_team_season_history(db, ids, scope="team")
+    history["team_id"] = team.id
+    history["full_name"] = team.full_name
+    history["abbreviation"] = team.abbreviation
+    history["logo"] = team_logo_url(team.abbreviation)
+    return history
+
+
+@router.get("/franchises/{franchise_id}/seasons")
+async def franchise_season_history(
+    franchise_id: int, db: AsyncSession = Depends(get_db)
+):
+    """Per-season record chart across a franchise's full identity lineage."""
+    franchise = await db.get(Franchise, franchise_id)
+    if not franchise:
+        raise HTTPException(status_code=404, detail=f"Franchise {franchise_id} not found.")
+    ids = await _sibling_ids(db, franchise_id)
+    if not ids:
+        return {
+            "scope": "franchise",
+            "franchise_id": franchise.id,
+            "full_name": franchise.full_name,
+            "seasons": [],
+            "records": {},
+            "streaks": {},
+        }
+    history = await build_team_season_history(db, ids, scope="franchise")
+    history["franchise_id"] = franchise.id
+    history["full_name"] = franchise.full_name
+    return history
 @router.get("/teams/{team_id}")
 async def get_team(team_id: int, db: AsyncSession = Depends(get_db)):
     team = await db.get(Team, team_id)

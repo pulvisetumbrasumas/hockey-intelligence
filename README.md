@@ -29,6 +29,9 @@ invents numbers.
 - **Playoff history** — conference finals restored for the 16-team playoff era
   (1993-94 → today) plus every Cup Final, shown as per-season bracket cards with
   series winners and game counts.
+- **Club season history** — every team and franchise page charts its full
+  season-by-season record (points, win totals, championship / conference-final
+  markers) with data-driven records, winning-run and cup-drought streaks.
 - **Living league views** — schedule & scores and live-NHL boards are proxied from the
   NHL schedule endpoint; standings, career/season leaders and player pages are computed
   from the embedded database.

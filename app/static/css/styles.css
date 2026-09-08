@@ -1091,3 +1091,21 @@ select.field option { background: #0a0f1c; color: var(--text); }
   font-size:11.5px;
   background:rgba(53,215,255,.06);
 }
+
+/* ---- season-by-season chart (teams/franchises) ---- */
+.chart-scroll { overflow-x: auto; }
+.hchart { min-width: 560px; }
+.hchart svg { width: 100%; height: auto; display: block; }
+.hbar { fill: rgba(53, 215, 255, 0.35); }
+.hbar:hover { fill: rgba(53, 215, 255, 0.6); }
+.hbar-conf { fill: rgba(53, 215, 255, 0.55); }
+.hbar-cup { fill: rgba(217, 178, 106, 0.75); }
+.cup-mark { fill: var(--gold); font-size: 13px; }
+.finalist-mark { fill: var(--gold); opacity: 0.9; }
+.axis-label { fill: var(--text-3); font-size: 10.5px; font-family: inherit; }
+.grid-line { stroke: rgba(148, 163, 184, 0.15); stroke-width: 1; }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; margin-top: 10px; }
+.legend i.dot { display: inline-block; width: 9px; height: 9px; border-radius: 3px; margin-right: 5px; vertical-align: baseline; }
+.legend i.dot.cup { background: rgba(217, 178, 106, 0.75); }
+.legend i.dot.final { background: var(--gold); border-radius: 50%; }
+.legend i.dot.conf { background: rgba(53, 215, 255, 0.55); }

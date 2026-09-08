@@ -275,6 +275,25 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 - Fixed the previously-wrong 2024-25 champions row in the live DB + migration seed
   (was "FLA def. CAR 4-1" → corrected to "FLA def. EDM 4-2", runner_team_id 12→22).
 
+## Slice 9 — per-team/franchise season charts (verified)
+
+- `app/services/history.py`: builds a chronological club/franchise record from
+  `team_season_stats` (all 1,727 rows are `game_type=2` regular season), markers it
+  with Stanley Cup / finalist (from `champions`) and conference-final appearances
+  (from `playoff_series`), and derives deterministic records + streaks. Pure
+  `summarize_history()` is unit-tested for exact behaviour.
+- `/api/teams/{team_id}/seasons` and `/api/franchises/{franchise_id}/seasons` return
+  `{scope, seasons[], records{}, streaks{}}`. Team scope includes sibling team-ids of
+  the same franchise (so a club chart matches its trophy cabinet), and each row is
+  tagged with the identity name of the club that stood that season (e.g. Carolina
+  = Hartford Whalers 1979-97 → Hurricanes; current Jets = Atlanta Thrashers lineage).
+- UI: "Season by season" section on team pages, "Franchise history" on franchise
+  pages — hand-rolled SVG bar chart (points/season, no chart library), gold ★ for
+  champion seasons, dot markers for finalist / conference final, hover tooltips,
+  streak chips (winning-run, 100-pt run, cup drought) + record chips. Checked against
+  Carolina (45 seasons, cup 2005-06, drought 19), Canadiens (107 seasons),
+  Winnipeg/Thrashers (25, one conference final).
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,
@@ -297,4 +316,5 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 3. Playoff brackets/series data per season; seed game results for historic seasons.
    (Conference finals + finals restored in Slice 8; rounds 1-2 and per-game scores pending.)
 4. Team season endpoints + per-team charts; streaks engine.
+   (Season-by-season charts + streaks shipped in Slice 9; per-game streaks pending.)
 5. National licensing terms review for NHL API redistribution.

@@ -54,6 +54,7 @@
     const id = Number(ctx.parts[1]);
     try {
       const t = await window.HI.api("/api/teams/" + id);
+      const seasonsData = await window.HI.api("/api/teams/" + id + "/seasons");
       const html =
         '<div class="card" style="margin-top:22px;">' +
         '<div class="row wrap" style="gap:20px;">' +
@@ -81,6 +82,12 @@
             "</div></div></div>"
           : "") +
 
+        seasonChartSection(
+          seasonsData,
+          "Season by season",
+          (seasonsData.seasons || []).length + " seasons on record"
+        ) +
+
         '<div class="section"><div class="head"><h2>Club history</h2></div>' +
         '<div class="card"><div class="timeline">' +
         (t.identities && t.identities.length
@@ -101,6 +108,123 @@
 
   function logoFromAbbr(abbr) {
     return abbr ? "https://assets.nhle.com/logos/nhl/svg/" + abbr.toUpperCase() + "_light.svg" : null;
+  }
+
+  /* ---------------- Season-by-season chart ---------------- */
+
+  function seasonChartSection(seasonData, title, subtitle) {
+    const seasons = (seasonData && seasonData.seasons) || [];
+    if (!seasons.length) return "";
+    const body = [];
+    body.push(chartSvg(seasons));
+    body.push(streakChips(seasonData));
+    body.push(recordsRow(seasonData, seasons));
+    return (
+      '<div class="section"><div class="head"><h2>' + HI_(title) + "</h2>" +
+      '<span class="pill-tag cyan">' + HI_(subtitle || "") + "</span></div>" +
+      '<div class="card"><div class="chart-scroll">' + body.join("") + "</div></div></div>"
+    );
+  }
+
+  function chartSvg(seasons) {
+    const W = 1000, H = 300, padL = 34, padB = 30, padT = 24, padR = 12;
+    const innerW = W - padL - padR, innerH = H - padT - padB;
+    const maxPts = Math.max.apply(null, seasons.map((s) => s.points || 0));
+    const scaleY = (v) => padT + innerH * (1 - (v || 0) / maxPts);
+    const n = seasons.length;
+    const step = innerW / Math.max(n, 1);
+    const barW = Math.max(4, Math.min(26, step * 0.62));
+
+    let bars = "",
+        labels = "",
+        markers = "";
+    const labelEvery = Math.max(1, Math.ceil(n / 14));
+    seasons.forEach((s, i) => {
+      const x = padL + i * step + (step - barW) / 2;
+      const y = scaleY(s.points);
+      const h = padT + innerH - y;
+      const gold = s.stanley_cup;
+      const conf = s.conference_final && !s.stanley_cup;
+      const tooltip =
+        s.season_label + ": " + s.points + " pts · " + s.wins + "-" + s.losses +
+        (s.ot_losses ? "-" + s.ot_losses : "") + (s.ties ? "-" + s.ties : "") +
+        (gold ? " · CHAMPION" : conf ? " · conf. final" : "") +
+        (s.cup_finalist && !gold ? " · Finalist" : "");
+      bars +=
+        '<g><title>' + HI_(tooltip) + "</title>" +
+        '<rect x="' + x.toFixed(1) + '" y="' + y.toFixed(1) + '" width="' + barW.toFixed(1) +
+        '" height="' + Math.max(h, 1).toFixed(1) + '" rx="2" class="hbar' +
+        (gold ? " hbar-cup" : conf ? " hbar-conf" : "") + '"></rect></g>';
+      if (gold) {
+        markers += '<text x="' + (padL + i * step).toFixed(1) +
+          '" y="' + (scaleY(s.points) - 8).toFixed(1) +
+          '" class="cup-mark" text-anchor="middle">★</text>';
+      } else if (s.cup_finalist) {
+        markers += '<circle cx="' + (padL + i * step).toFixed(1) +
+          '" cy="' + (scaleY(s.points) - 6).toFixed(1) + '" r="3" class="finalist-mark"></circle>';
+      }
+      if (i % labelEvery === 0 || i === n - 1) {
+        labels += '<text x="' + (padL + i * step).toFixed(1) +
+          '" y="' + (H - 8).toFixed(1) + '" class="axis-label" text-anchor="middle">' +
+          HI_(s.season_label) + "</text>";
+      }
+    });
+
+    const maxLbl = maxPts;
+    let grid = "";
+    for (let v = 0; v <= 4; v++) {
+      const val = Math.round((v / 4) * maxLbl);
+      const y = scaleY(val);
+      grid += '<line x1="' + padL + '" y1="' + y + '" x2="' + (W - padR) +
+        '" y2="' + y + '" class="grid-line"></line>' +
+        '<text x="' + (padL - 8) + '" y="' + (y + 4) +
+        '" class="axis-label" text-anchor="end">' + val + "</text>";
+    }
+
+    return (
+      '<div class="hchart"><svg viewBox="0 0 ' + W + " " + H +
+      '" role="img" aria-label="Points by season">' +
+      '<g>' + grid + "</g>" + "<g>" + bars + "</g>" + "<g>" + markers + "</g>" +
+      "<g>" + labels + "</g></svg></div>" +
+      '<div class="legend muted"><span><i class="dot cup"></i> Champion</span>' +
+      '<span><i class="dot final"></i> Cup finalist</span>' +
+      '<span><i class="dot conf"></i> Conference final</span></div>'
+    );
+  }
+
+  function streakChips(seasonData) {
+    const st = (seasonData && seasonData.streaks) || {};
+    const chips = [
+      { label: "Winning seasons run", value: st.current_winning_seasons === 1 ? "1 (current)" : (st.current_winning_seasons || "0") + " in a row" },
+      { label: "Longest winning run", value: st.longest_winning_seasons || "0" },
+      { label: "100-pt seasons run", value: (st.current_100_point_seasons || "0") + " in a row" },
+    ];
+    if (st.last_cup_season) {
+      chips.push(
+        st.seasons_since_cup === 0
+          ? { label: "Reigning champion", value: "defending the cup" }
+          : { label: "Cup drought", value: st.seasons_since_cup + " seasons" }
+      );
+    } else {
+      chips.push({ label: "Cup history", value: "never won" });
+    }
+    return '<div class="row wrap" style="gap:8px;margin-bottom:14px;">' +
+      chips.map((c) =>
+        '<span class="chip"><span class="muted">' + HI_(c.label) + " · </span><b>" + HI_(c.value) + "</b></span>"
+      ).join("") + "</div>";
+  }
+
+  function recordsRow(seasonData, seasons) {
+    const rec = (seasonData && seasonData.records) || {};
+    const fmt = (r) => (r ? r.season_label + " (" + r.value + (r.count > 1 ? ", x" + r.count : "") + ")" : "—");
+    return (
+      '<div class="row wrap" style="gap:8px;">' +
+      '<span class="chip"><span class="muted">Most points · </span><b>' + HI_(fmt(rec.points)) + "</b></span>" +
+      '<span class="chip"><span class="muted">Most wins · </span><b>' + HI_(fmt(rec.wins)) + "</b></span>" +
+      '<span class="chip"><span class="muted">Best points% · </span><b>' + HI_(fmt(rec.points_pct)) + "</b></span>" +
+      '<span class="chip"><span class="muted">Seasons on record · </span><b>' + seasons.length + "</b></span>" +
+      "</div>"
+    );
   }
 
   /* ---------------- Franchises ---------------- */
@@ -135,6 +259,7 @@
     const id = Number(ctx.parts[1]);
     try {
       const f = await window.HI.api("/api/franchises/" + id);
+      const seasonsData = await window.HI.api("/api/franchises/" + id + "/seasons");
       const html =
         '<div class="card" style="margin-top:22px;">' +
         '<span class="eyebrow">Franchise · Est ' + HI_(f.established_year || "?") + "</span>" +
@@ -155,7 +280,14 @@
               (i.notes ? " · " + HI_(i.notes) : "") + "</p></div>"
             ).join("")
           : '<div class="empty"><h4>No identities linked yet</h4><p>Identity rows arrive with the deeper history slice.</p></div>') +
-        "</div></div></div>";
+        "</div></div></div>" +
+
+        seasonChartSection(
+          seasonsData,
+          "Franchise history",
+          (seasonsData.seasons || []).length + " seasons across the lineage"
+        ) +
+        "";
       return { html };
     } catch (err) {
       return "<div class='error-block'>" + HI_(err && err.message) + "</div>";
