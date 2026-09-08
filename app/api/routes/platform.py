@@ -13,6 +13,7 @@ from app.database.connection import get_db
 from app.models import Season, Team
 from app.models.stats_team import TeamSeasonStats
 from app.services.images import team_logo_url
+from app.services.statistics.engine import FANTASY_PRESETS, StatisticsEngine
 
 router = APIRouter(prefix="/api", tags=["platform"])
 
@@ -160,6 +161,10 @@ async def season_facts(db: AsyncSession = Depends(get_db)):
 @router.get("/events")
 async def events(db: AsyncSession = Depends(get_db)):
     """Upcoming league-wide events. Date sources marked per event."""
+    return await _events_payload(db)
+
+
+async def _events_payload(db: AsyncSession) -> dict:
     settings = get_settings()
     facts = await _season_facts_from_nhl(db)
     now = time.time()
@@ -271,6 +276,38 @@ async def schedule(
     }
 
 
+@router.get("/fantasy/pool")
+async def fantasy_pool(
+    stat_type: str = Query("skater", pattern="^(skater|goalie)$"),
+    preset: str = Query("standard"),
+    limit: int = Query(160, ge=1, le=400),
+    game_type: int = Query(2, ge=2, le=3),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deterministic career fantasy pool for a scoring preset.
+
+    Entertainment, for fun — computed from the same career totals the
+    leaderboards use; never a claim about who is objectively best.
+    """
+    engine = StatisticsEngine(db)
+    try:
+        pool = await engine.get_fantasy_pool(
+            preset=preset, stat_type=stat_type, limit=limit, game_type=game_type
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    presets = [
+        {
+            "key": k,
+            "label": v["label"],
+            "tagline": v["tagline"],
+            "weights": v["weights"],
+        }
+        for k, v in FANTASY_PRESETS.items()
+    ]
+    return {**pool, "presets": presets}
+
+
 @router.get("/standings")
 async def standings(
     season_id: int = Query(20242025),
@@ -324,7 +361,7 @@ async def standings(
         row["in_playoffs"] = index <= 16
     return {
         "season_id": season_id,
-        "season_label": rows[0][1],
+        "season_label": rows[0][2],
         "game_type": game_type,
         "note": "League-wide view sorted by points; conference splits return in a later slice.",
         "rows": standings_rows,

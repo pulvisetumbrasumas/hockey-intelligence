@@ -163,84 +163,209 @@
     }
   }
 
-  /* ---------------- Fantasy (experimental shell) ---------------- */
+  /* ---------------- Fantasy (draft-room slice) ---------------- */
+  const FANTASY_SLOTS = [
+    ["C", 2, "Centers"],
+    ["LW", 2, "Left wings"],
+    ["RW", 2, "Right wings"],
+    ["D", 4, "Defensemen"],
+    ["G", 1, "Goaltenders"],
+  ];
+  const BENCH_SLOTS = 2;
+
   async function fantasy(ctx) {
     try {
-      const [skaters, wins, spct] = await Promise.all([
-        window.HI.api("/api/stats/leaders/career?metric=points&stat_type=skater&limit=16"),
-        window.HI.api("/api/stats/leaders/career?metric=wins&stat_type=goalie&limit=8"),
-        window.HI.api("/api/stats/leaders/career?metric=save_pct&stat_type=goalie&limit=8"),
+      let root;
+      let preset = "standard";
+      let tab = "skater";
+      const saved = window.HI.store.get("roster", null);
+      const picks = saved && saved.picks && typeof saved.picks === "object" ? saved.picks : {};
+      const fmtS = (n) => (n == null ? "—" : (Number.isInteger(n) ? L(n) : n.toFixed(2)));
+      const defaultPools = await Promise.all([
+        window.HI.api("/api/fantasy/pool?stat_type=skater&preset=standard&limit=200"),
+        window.HI.api("/api/fantasy/pool?stat_type=goalie&preset=standard&limit=80"),
       ]);
-      const pick = (d) => d.results || d.rows || [];
-      const all = [
-        ...pick(skaters).map((r) => ({ ...r, role: "skater" })),
-        ...pick(wins).map((r) => ({ ...r, role: "goalie" })),
-        ...pick(spct).map((r) => ({ ...r, role: "goalie" })),
-      ];
+      let pools = { skater: defaultPools[0], goalie: defaultPools[1] };
+      const presets = defaultPools[0].presets;
+
+      const fetchPool = async (p) => {
+        const [s, g] = await Promise.all([
+          window.HI.api("/api/fantasy/pool?stat_type=skater&preset=" + encodeURIComponent(p) + "&limit=200"),
+          window.HI.api("/api/fantasy/pool?stat_type=goalie&preset=" + encodeURIComponent(p) + "&limit=80"),
+        ]);
+        pools = { skater: s, goalie: g };
+      };
+
+      const slotSpace = (pos) => {
+        const def = FANTASY_SLOTS.find((f) => f[0] === pos);
+        return def ? def[1] - (picks[pos] || []).length : 0;
+      };
+
+      const drawn = (pid) =>
+        Object.keys(picks).some((k) =>
+          (picks[k] || []).some((p) => String(p.player_id) === pid)
+        );
+
+      const draft = (row) => {
+        const pid = String(row.player_id);
+        if (drawn(pid)) {
+          window.HI.toast(row.name + " is already on your roster.");
+          return;
+        }
+        const pos = row.role === "goalie" ? "G" : (row.position || "D");
+        const benchFree = BENCH_SLOTS - (picks.BN || []).length;
+        if (slotSpace(pos) > 0) {
+          picks[pos] = picks[pos] || [];
+          picks[pos].push(row);
+        } else if (benchFree > 0) {
+          picks.BN = picks.BN || [];
+          picks.BN.push(row);
+        } else {
+          window.HI.toast("Roster full for " + (row.position || "that") + " and bench.");
+          return;
+        }
+        window.HI.store.set("roster", { preset, picks });
+        renderRoster();
+        renderPool();
+      };
+
+      const release = (pos, pid) => {
+        picks[pos] = (picks[pos] || []).filter((p) => String(p.player_id) !== pid);
+        window.HI.store.set("roster", { preset, picks });
+        renderRoster();
+        renderPool();
+      };
+
+      const releaseAll = () => {
+        Object.keys(picks).forEach((k) => delete picks[k]);
+        window.HI.store.set("roster", { preset, picks });
+        renderRoster();
+        renderPool();
+      };
+
+      const saveRoster = () => {
+        window.HI.store.set("roster", { preset, picks });
+        const n = Object.values(picks).reduce((a, l) => a + l.length, 0);
+        window.HI.toast("Roster saved (" + n + " players).");
+      };
+
+      const rowCell = (r) => {
+        const pos = r.role === "goalie" ? "G" : (r.position || "—");
+        const picked = drawn(String(r.player_id));
+        return (
+          '<div class="row fantasy-row' + (picked ? " picked" : "") + '" data-pid="' + r.player_id + '"' +
+          ' style="padding:7px 10px;cursor:pointer;border-bottom:1px solid var(--line-soft);gap:10px;">' +
+          '<span class="rank" style="width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:10px;font-weight:700;background:rgba(255,255,255,.05);color:var(--text-3);">' + r.rank + "</span>" +
+          '<span class="grow" style="min-width:0;"><span style="font-weight:600;">' + HI_(r.name) + '</span>' +
+          '<span class="dim" style="font-size:11px;"> ' + HI_(r.team || "—") + " · " + HI_(pos) + "</span></span>" +
+          '<span class="num" style="color:var(--cyan);font-weight:700;font-variant-numeric:tabular-nums;">' + fmtS(r.fp) + "</span>" +
+          '<span class="dim" style="font-size:11px;width:52px;text-align:right;font-variant-numeric:tabular-nums;">' + (r.fp_per_game == null ? "—" : fmtS(r.fp_per_game) + "/g") + "</span>" +
+          '<span class="pill-tag cyan" style="font-size:9px;flex:0 0 auto;">' + (picked ? "in" : "+") + "</span></div>"
+        );
+      };
+
+      const renderPool = () => {
+        const box = root.querySelector("#fp-pool");
+        const role = pools[tab] || { results: [] };
+        const list = (role.results || []).map((r) => rowCell({ ...r, role: tab })).join("");
+        box.innerHTML =
+          '<div class="row wrap" style="gap:8px;align-items:center;margin-bottom:10px;">' +
+          '<span class="pill-tag gold">career-scoped</span>' +
+          '<span class="dim" style="font-size:12px;">' + HI_(role.preset_label || preset) + " · " + HI_(role.preset_tagline || "") + "</span></div>" +
+          '<div style="max-height:520px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;">' +
+          (list || '<div class="empty" style="padding:16px;"><h4>No data</h4></div>') +
+          "</div>";
+        root.querySelectorAll(".fantasy-row").forEach((row) =>
+          row.addEventListener("click", () => {
+            const r = (pools[tab].results || []).find(
+              (x) => String(x.player_id) === String(row.dataset.pid)
+            );
+            if (r) draft({ ...r, role: tab });
+          })
+        );
+      };
+
+      const renderRoster = () => {
+        const box = root.querySelector("#fp-roster");
+        const slotBlock = (pos, count, label) => {
+          const cells = Array.from({ length: count }, (_, i) => {
+            const p = (picks[pos] || [])[i];
+            return p
+              ? '<div class="fchip filled" data-rel="release" data-pos="' + pos + '" data-pid="' + p.player_id + '" title="Click to release">' +
+                '<b>' + HI_(p.name) + '</b><span>' + HI_(p.team || "—") + " · " + fmtS(p.fp) + " pts</span></div>"
+              : '<div class="fchip empty"><span class="dim">' + HI_((pos === "G" ? "Goalie" : pos) + " slot " + (i + 1)) + "</span></div>";
+          }).join("");
+          return '<div class="fslot"><span class="dim" style="font-size:11px;">' + HI_(label) + "</span>" +
+            '<div class="row wrap" style="gap:8px;">' + cells + "</div></div>";
+        };
+        const bench = Array.from({ length: BENCH_SLOTS }, (_, i) => {
+          const p = (picks.BN || [])[i];
+          return p
+            ? '<div class="fchip bench filled" data-rel="release" data-pos="BN" data-pid="' + p.player_id + '" title="Click to release">' +
+              '<b>' + HI_(p.name) + '</b><span>' + HI_(p.team || "—") + " · " + fmtS(p.fp) + ' pts</span></div>'
+            : '<div class="fchip empty"><span class="dim">Bench</span></div>';
+        }).join("");
+        box.innerHTML =
+          '<div style="display:grid;gap:12px;margin-bottom:14px;">' +
+          FANTASY_SLOTS.map(([pos, count, label]) => slotBlock(pos, count, label)).join("") +
+          '<div class="fslot"><span class="dim" style="font-size:11px;">Bench (' + BENCH_SLOTS + ')</span>' +
+          '<div class="row wrap" style="gap:8px;">' + bench + "</div></div></div>" +
+          '<div class="row wrap" style="gap:8px;">' +
+          '<button class="btn accent" id="fp-save">Save roster</button>' +
+          '<button class="btn ghost" id="fp-clear">Reset</button></div>';
+        root.querySelectorAll("[data-rel=release]").forEach((chip) =>
+          chip.addEventListener("click", () => release(chip.dataset.pos, chip.dataset.pid))
+        );
+        root.querySelector("#fp-save").addEventListener("click", saveRoster);
+        root.querySelector("#fp-clear").addEventListener("click", releaseAll);
+      };
+
+      const renderPresets = () => {
+        const wrap = root.querySelector("#fp-preset-wrap");
+        wrap.innerHTML = (presets || [])
+          .map(
+            (p) =>
+              '<button class="btn sm ' + (p.key === preset ? "accent" : "ghost") + '" data-fp-preset="' + p.key + '">' +
+              HI_(p.key === "standard" ? "Standard" : p.key === "bangers" ? "Bangers" : "Pure points") + "</button>"
+          ).join("");
+        wrap.querySelectorAll("[data-fp-preset]").forEach((b) =>
+          b.addEventListener("click", async () => {
+            if (b.dataset.fpPreset === preset) return;
+            preset = b.dataset.fpPreset;
+            b.disabled = true;
+            await fetchPool(preset);
+            renderPresets();
+            renderPool();
+          })
+        );
+      };
+
       return {
         html:
           '<h1 class="page-title">Fantasy</h1>' +
-          '<p class="page-sub"><b>Experimental, for fun</b> — this is a taste of the draft room, not a prediction engine. Build a watchlist from real career leaders; fantasy scoring is entertainment, never a claim about who is objectively best.</p>' +
-          '<div class="card">' +
-          '<div class="head"><h3>Draft room (preview)</h3><span class="pill-tag gold">simulation</span></div>' +
-          '<p class="muted" style="font-size:13px;">Tap leaders to add them to your watchlist. Full fantasy wiring — scoring systems, leagues, drafts — lands in a later slice.</p>' +
-          '<div class="row wrap" style="gap:8px;margin:14px 0;" id="squad"></div>' +
-          '<div style="max-height:380px;overflow-y:auto;border:1px solid var(--line);border-radius:10px;">' +
-          all.map((r, i) =>
-            '<div class="row fantasy-row" data-pid="' + r.player_id + '" style="padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--line-soft);">' +
-            '<span class="rank" style="width:22px;height:22px;border-radius:6px;display:grid;place-items:center;font-size:11px;font-weight:700;background:rgba(255,255,255,.05);color:var(--text-3);">' + (i + 1) + "</span>" +
-            '<span class="grow" style="font-weight:600;">' + HI_(r.full_name) + "</span>" +
-            '<span class="pill-tag ' + (r.role === "goalie" ? "gold" : "cyan") + '" style="font-size:9px;">' + (r.role || "") + "</span>" +
-            '<span class="num" style="color:var(--cyan);font-weight:700;">' + fmtF(r.value, r.role) + "</span></div>"
-          ).join("") +
-          "</div>" +
-          '<div class="row wrap" style="margin-top:14px;">' +
-          '<button class="btn accent" id="squad-save">Save watchlist</button>' +
-          '<button class="btn ghost" id="squad-clear">Clear</button></div>' +
-          "<p class='panel-tip' style='margin-top:12px;'>Watchlists live in this browser. Verified by the same statistics engine that runs this whole platform.</p>" +
-          "</div>",
+          '<p class="page-sub"><b>Experimental, for fun</b> — an honest draft room powered by the same statistics engine as the rest of this platform. Draft real career leaders into a positions-based roster. Fantasy scoring is entertainment, never a claim about who is objectively best.</p>' +
+          '<div class="row wrap" style="gap:8px;margin-bottom:14px;" id="fp-preset-wrap"></div>' +
+          '<div class="row wrap" style="gap:16px;align-items:flex-start;">' +
+          '<div class="card" style="flex:1.4;min-width:320px;">' +
+          '<div class="head"><h3>Draft pool</h3>' +
+          '<span class="row" style="gap:6px;"><button class="btn ghost sm" data-fp-tab="skater">Skaters</button>' +
+          '<button class="btn ghost sm" data-fp-tab="goalie">Goalies</button></span></div>' +
+          '<div id="fp-pool"></div></div>' +
+          '<div class="card" style="flex:1;min-width:300px;">' +
+          '<div class="head"><h3>Your roster</h3><span class="pill-tag gold">simulation</span></div>' +
+          '<div id="fp-roster"></div></div></div>' +
+          '<p class="panel-tip" style="margin-top:14px;max-width:760px;">Career totals, so a forward still checking off prime years can be outdrafted — that\'s the fun. Single-season scoring ships with a later slice. Rosters live in this browser.</p>',
         bind(view) {
-          let squad = window.HI.store.get("hi.squad", []);
-          const box = view.querySelector("#squad");
-          const renderSquad = () => {
-            box.innerHTML = squad.length
-              ? squad.map((p) =>
-                  '<span class="pill-tag cyan">' + HI_(p.full_name) + '<b style="cursor:pointer;" data-x="' + p.player_id + '"> ×</b></span>'
-                ).join("")
-              : '<span class="dim">No players selected yet.</span>';
-            box.querySelectorAll("[data-x]").forEach((b) =>
-              b.addEventListener("click", () => {
-                squad = squad.filter((p) => String(p.player_id) !== String(b.dataset.x));
-                window.HI.store.set("squad", squad);
-                renderSquad();
-              })
-            );
-          };
-          renderSquad();
-          view.querySelectorAll(".fantasy-row").forEach((row) => {
-            row.addEventListener("click", () => {
-              const pid = row.dataset.pid;
-              const name = row.querySelector(".grow").textContent;
-              if (squad.some((p) => String(p.player_id) === pid)) {
-                squad = squad.filter((p) => String(p.player_id) !== pid);
-                window.HI.toast("Removed from watchlist.");
-              } else {
-                squad.push({ player_id: pid, full_name: name });
-                window.HI.store.set("squad", squad);
-                window.HI.toast("Added to watchlist.");
-              }
-              renderSquad();
-            });
-          });
-          view.querySelector("#squad-save").addEventListener("click", () => {
-            window.HI.store.set("squad", squad);
-            window.HI.toast("Watchlist saved (" + squad.length + " players).");
-          });
-          view.querySelector("#squad-clear").addEventListener("click", () => {
-            squad = [];
-            window.HI.store.set("squad", []);
-            renderSquad();
-          });
+          root = view;
+          renderPresets();
+          renderPool();
+          renderRoster();
+          view.querySelectorAll("[data-fp-tab]").forEach((b) =>
+            b.addEventListener("click", () => {
+              tab = b.dataset.fpTab;
+              renderPool();
+            })
+          );
         },
       };
     } catch (err) {
@@ -274,38 +399,44 @@
   }
 
   /* ---------------- Favorites ---------------- */
+  function normFav(f) {
+    return {
+      name: f.label || f.name || "Saved item",
+      type: f.item_type || f.type || "player",
+      id: f.item_key != null ? f.item_key : f.id,
+      sub: f.sub || f.type || "",
+    };
+  }
+
   async function favorites(ctx) {
-    const list = window.HI.favorites.list();
-    const render = () =>
-      list.length
+    const render = () => {
+      const list = window.HI.favorites.list().map(normFav);
+      return list.length
         ? '<div class="grid cards-xl">' +
           list.map((f) =>
             '<a href="' + hrefFor(f) + '" class="card hover" style="text-decoration:none;display:flex;align-items:center;gap:14px;">' +
             '<div style="width:46px;height:46px;border-radius:13px;background:linear-gradient(115deg,rgba(53,215,255,.16),rgba(122,162,255,.12));border:1px solid var(--line);display:grid;place-items:center;font-weight:800;color:var(--cyan);">' +
             HI_(window.HI.initials(f.name)) + "</div>" +
             '<div class="grow"><div style="font-weight:700;">' + HI_(f.name) + "</div>" +
-            '<div class="muted" style="font-size:12px;">' + HI_(f.sub || f.type) + "</div></div>" +
+            '<div class="muted" style="font-size:12px;">' + HI_(f.sub) + "</div></div>" +
             '<button class="btn sm ghost" data-rm="' + f.type + ":" + f.id + '" style="flex:none;">Remove</button></a>'
           ).join("") +
           "</div>"
         : '<div class="empty"><div class="glyph">☆</div><h4>Nothing saved yet</h4>' +
           "<p>Follow players, teams and franchises from any profile page and they will appear here.</p></div>";
+    };
 
     return {
       html:
         '<h1 class="page-title">My Favorites</h1>' +
-        '<p class="page-sub">Your saved follows, held locally in this browser for now.</p>' +
+        '<p class="page-sub">' + (window.HI.account.token() ? "Synced to your account — follows follow you anywhere." : "Held locally in this browser. Sign in above to sync them across devices.") + "</p>" +
         '<div id="favorites-list">' + render() + "</div>",
       bind(view) {
         view.addEventListener("click", (e) => {
           const rm = e.target.closest("[data-rm]");
           if (!rm) return;
           const [type, id] = rm.dataset.rm.split(":");
-          const next = window.HI.favorites.list().filter(
-            (f) => !(f.type === type && String(f.id) === id)
-          );
-          window.HI.store.set("favorites", next);
-          window.HI.favorites.updateBadge();
+          window.HI.favorites.remove({ type, id, name: "" });
           view.querySelector("#favorites-list").innerHTML = render();
           window.HI.toast("Removed from My Favorites");
         });
@@ -321,21 +452,69 @@
   }
 
   /* ---------------- Settings ---------------- */
+  const EVENT_KEYS = [
+    ["preseason", "Preseason opens"],
+    ["regular-season", "Regular season begins"],
+    ["regular-season-end", "Regular season ends"],
+    ["playoff-end", "Stanley Cup Final window"],
+  ];
+
   async function settings(ctx) {
     const a = window.HI.account.get();
+    const user = a && a.user ? a.user : null;
+    const signedIn = !!window.HI.account.token();
     const facts = await window.HI.api("/api/season-facts").catch(() => null);
+    const prefs = signedIn
+      ? await window.HI.api("/api/account/prefs").catch(() => ({ prefs: [] }))
+      : { prefs: [] };
+    const prefSet = (prefs.prefs || []).filter((p) => p.enabled).map((p) => p.event_key);
+    const leadDays = ((prefs.prefs || []).find((p) => p.enabled) || {}).lead_days || 3;
+    const section = (ctx.query && ctx.query.section) || "";
+
+    const profileHtml =
+      '<div class="card" data-card="profile"><div class="head"><h3>Profile</h3>' +
+      (signedIn ? '<span class="pill-tag cyan">server account</span>' : '<span class="pill-tag gold">this browser</span>') +
+      "</div>" +
+      (user
+        ? '<p style="margin:0;"><b>' + HI_(user.display_name || user.username) + "</b><br/>" +
+          '<span class="muted">@' + HI_(user.username) + "</span></p>" +
+          '<button class="btn ghost" style="margin-top:12px;" id="settings-signout">Sign out</button>'
+        : '<p class="muted" style="margin:0;">' +
+          (signedIn ? "Account session starting…" : "No profile yet — favorites and prefs stay in this browser until you create one.") +
+          "</p>" +
+          '<button class="btn accent" style="margin-top:12px;" id="settings-account">' + (signedIn ? "Sign in again" : "Create profile") + "</button>") +
+      "</div>";
+
+    const prefsHtml =
+      '<div class="card" data-card="prefs"><div class="head"><h3>Notification preferences</h3>' +
+      (signedIn ? '<span class="pill-tag cyan">synced</span>' : '<span class="pill-tag gold">signed-in only</span>') +
+      "</div>" +
+      (signedIn
+        ? '<p class="muted" style="font-size:13px;margin:0 0 10px;">Choose the league events you want a head-up on. We remind you as each one approaches — no fake news, only the platform calendar.</p>' +
+          '<div class="row wrap">' +
+          EVENT_KEYS.map(([key, label]) =>
+            '<label class="pill-tag" style="cursor:pointer;user-select:none;">' +
+            '<input type="checkbox" data-evkey="' + key + '"' + (prefSet.includes(key) ? " checked" : "") + ' style="accent-color:var(--cyan);"> ' +
+            HI_(label) + "</label>"
+          ).join("") +
+          "</div>" +
+          '<div class="row wrap" style="margin-top:14px;align-items:center;">' +
+          '<span class="muted" style="font-size:12.5px;">Send heads-up</span>' +
+          '<select id="prefs-lead" class="field" style="width:110px;">' +
+          [1, 3, 7, 14].map((d) => '<option value="' + d + '"' + (d === leadDays ? " selected" : "") + ">" + d + " days</option>").join("") +
+          "</select>" +
+          '<button class="btn accent" id="prefs-save">Save preferences</button></div>'
+        : '<p class="muted" style="margin:0;">Sign in to pick which league events surface in your notifications.</p>') +
+      "</div>";
+
     return {
       html:
         '<h1 class="page-title">Settings</h1>' +
-        '<p class="page-sub">Local preferences for this browser. Server-backed accounts and sync arrive in a later vertical slice.</p>' +
+        '<p class="page-sub">Your account, notifications and local data. Synced preferences follow you across devices; nothing else leaves this machine.</p>' +
         '<div class="grid" style="grid-template-columns:1fr 1fr;align-items:start;">' +
-        '<div class="card"><div class="head"><h3>Profile</h3></div>' +
-        (a
-          ? '<p style="margin:0;"><b>' + HI_(a.name) + "</b><br/><span class='muted'>" + HI_(a.email || "no email") + "</span></p>" +
-            '<button class="btn ghost" style="margin-top:12px;" id="settings-signout">Sign out</button>'
-          : '<p class="muted" style="margin:0;">No profile yet.</p>' +
-            '<button class="btn accent" style="margin-top:12px;" id="settings-account">Create profile</button>') +
+        profileHtml + prefsHtml +
         "</div>" +
+        '<div class="grid" style="grid-template-columns:1fr 1fr;align-items:start;margin-top:18px;">' +
         '<div class="card"><div class="head"><h3>Platform</h3></div>' +
         '<div class="factgrid" style="grid-template-columns:1fr 1fr;">' +
         '<div class="fact"><div class="k">Season start</div><div class="v">' + HI_((facts && facts.regular_season && facts.regular_season.start) || "—") + "</div></div>" +
@@ -344,18 +523,43 @@
         '<div class="fact"><div class="k">Data source</div><div class="v">Embedded DB</div></div>' +
         "</div>" +
         '<p class="panel-tip" style="margin-top:12px;">The database is the source of truth. The UI never fabricates dates — countdowns derive from the league schedule API and configured calendar on the server.</p>' +
-        "</div></div>" +
-        '<div class="card" style="margin-top:18px;"><div class="head"><h3>Local data</h3></div>' +
+        "</div>" +
+        '<div class="card"><div class="head"><h3>Local data</h3></div>' +
         '<div class="row wrap">' +
-        '<button class="btn red" id="settings-clear">Clear favorites, watchlist and profile</button>' +
+        '<button class="btn red" id="settings-clear">Clear favorites, watchlist, roster and local profile</button>' +
+        "</div>" +
+        '<p class="panel-tip" style="margin-top:12px;">Clearing local data keeps your server account untouched if you have one.</p>' +
         "</div></div>",
       bind(view) {
+        if (section === "notification-prefs") {
+          const card = view.querySelector("[data-card=prefs]");
+          if (card) card.scrollIntoView({ block: "center", behavior: "smooth" });
+        }
         const sa = view.querySelector("#settings-account");
         if (sa) sa.addEventListener("click", () => { (window.HI.$("#btn-account") || {}).click(); });
         const so = view.querySelector("#settings-signout");
-        if (so) so.addEventListener("click", () => { window.HI.account.clear(); window.HI.toast("Signed out."); setTimeout(() => location.reload(), 400); });
+        if (so) so.addEventListener("click", () => {
+          const t = window.HI.account.token();
+          window.HI.account.clear();
+          if (t) window.HI.apiPost("/api/account/logout", {}).catch(() => {});
+          window.HI.favorites.updateBadge();
+          window.HI.toast("Signed out.");
+          setTimeout(() => location.reload(), 400);
+        });
+        const psc = view.querySelector("#prefs-save");
+        if (psc) psc.addEventListener("click", async () => {
+          const keys = Array.from(view.querySelectorAll("[data-evkey]:checked")).map((c) => c.dataset.evkey);
+          const lead = Number(view.querySelector("#prefs-lead").value);
+          try {
+            await window.HI.apiPost("/api/account/prefs", { event_keys: keys, lead_days: lead });
+            window.HI.toast("Notification preferences saved.");
+          } catch (err) {
+            window.HI.toast((err && err.message) || "Could not save preferences.");
+          }
+        });
         view.querySelector("#settings-clear").addEventListener("click", () => {
-          ["account", "favorites", "squad"].forEach((k) => localStorage.removeItem("hi." + k));
+          ["session", "favorites", "squad", "roster"].forEach((k) => localStorage.removeItem("hi." + k));
+          window.HI.favorites.updateBadge();
           window.HI.toast("Local data cleared.");
           setTimeout(() => location.reload(), 400);
         });

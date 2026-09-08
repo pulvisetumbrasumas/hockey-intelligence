@@ -38,6 +38,51 @@ GOALIE_METRICS = {
     "time_on_ice": "time_on_ice",
 }
 
+# Fantasy scoring presets. Entertainment only — never a claim about who is
+# objectively best. Deterministic: computed from the same career aggregates the
+# rest of the engine uses. Weights apply to career TOTALS; goalie save_pct bonus
+# is applied to (save_pct - 0.900) so units stay comparable across shot volumes.
+FANTASY_PRESETS: dict[str, dict] = {
+    "standard": {
+        "label": "Standard",
+        "tagline": "Goals & helpers, with a slight bite for the penalty box.",
+        "weights": {
+            "goals": 3.0,
+            "assists": 2.0,
+            "plus_minus": 1.0,
+            "penalty_minutes": -0.5,
+            "shots": 0.25,
+            "hits": 0.5,
+            "blocked_shots": 0.5,
+            "power_play_goals": 0.5,
+            "shorthanded_goals": 1.0,
+        },
+        "goalie_weights": {"wins": 4.0, "shutouts": 5.0, "save_pct_bonus": 1200.0},
+    },
+    "bangers": {
+        "label": "Bangers",
+        "tagline": "Hit, block, shoot — the physical playbook.",
+        "weights": {
+            "goals": 2.5,
+            "assists": 1.5,
+            "plus_minus": 0.5,
+            "penalty_minutes": 0.75,
+            "shots": 0.5,
+            "hits": 0.75,
+            "blocked_shots": 1.0,
+            "power_play_goals": 0.5,
+            "shorthanded_goals": 1.0,
+        },
+        "goalie_weights": {"wins": 4.0, "shutouts": 4.0, "save_pct_bonus": 800.0},
+    },
+    "pure_points": {
+        "label": "Pure points",
+        "tagline": "Just the scoresheet basics.",
+        "weights": {"goals": 1.0, "assists": 1.0},
+        "goalie_weights": {"wins": 3.0, "shutouts": 2.0, "save_pct_bonus": 0.0},
+    },
+}
+
 # rate metrics: (numerator column, denominator column, scale) — computed
 # instead of summed directly in career scope; denominator units differ
 _RATE_METRICS = {
@@ -460,6 +505,112 @@ class StatisticsEngine:
             season = await self.session.get(Season, season_id)
             payload["season_label"] = season.formatted_id if season else str(season_id)
         return payload
+
+    async def get_fantasy_pool(
+        self,
+        *,
+        preset: str = "standard",
+        stat_type: str = "skater",
+        limit: int = 160,
+        game_type: int = 2,
+    ) -> dict:
+        """Career fantasy pool for one scoring preset.
+
+        Entertainment, for fun — never a claim about who is objectively best.
+        Fantasy points are computed deterministically from the same career
+        totals the leaderboards use.
+        """
+        stat_type = stat_type.lower()
+        if preset not in FANTASY_PRESETS:
+            raise ValueError(
+                f"Unknown fantasy preset '{preset}'. "
+                f"Available: {', '.join(sorted(FANTASY_PRESETS))}"
+            )
+        meta = FANTASY_PRESETS[preset]
+
+        model = PlayerSeasonStats if stat_type == "skater" else GoalieSeasonStats
+        weights = meta["weights"] if stat_type == "skater" else meta["goalie_weights"]
+        fields: list[str] = list(weights) if stat_type == "skater" else ["wins", "shutouts"]
+
+        sums: dict[int, dict[str, float]] = {}
+        games: dict[int, float] = {}
+        recent_team: dict[int, str | None] = {}
+        save_sums: dict[int, list[float]] = {}
+
+        rows = (
+            await self.session.execute(
+                select(model).where(model.game_type == game_type)
+            )
+        ).scalars().all()
+
+        for row in rows:
+            pid = row.player_id
+            if pid is None:
+                continue
+            bucket = sums.setdefault(pid, {f: 0.0 for f in fields})
+            games[pid] = games.get(pid, 0.0) + (row.games_played or 0)
+            if stat_type == "goalie":
+                bb = save_sums.setdefault(pid, [0.0, 0.0])
+                bb[0] += row.saves or 0
+                bb[1] += row.shots_against or 0
+            for f in fields:
+                v = getattr(row, f, None)
+                if v is not None:
+                    bucket[f] += v
+            if row.team_abbrevs:
+                recent_team[pid] = row.team_abbrevs
+
+        player_ids = list(sums)
+        player_map: dict[int, Player] = {}
+        if player_ids:
+            players = (
+                await self.session.execute(
+                    select(Player).where(Player.id.in_(player_ids))
+                )
+            ).scalars().all()
+            player_map = {p.id: p for p in players}
+
+        pickable = []
+        for pid, bucket in sums.items():
+            fp = sum(bucket[f] * weights[f] for f in fields)
+            save_pct = None
+            if stat_type == "goalie":
+                made, faced = save_sums[pid]
+                if faced:
+                    save_pct = made / faced
+                    fp += (save_pct - 0.900) * weights.get("save_pct_bonus", 0.0)
+            gp = games.get(pid, 0)
+            metrics = {
+                k: (round(v, 4) if isinstance(v, float) else v)
+                for k, v in bucket.items()
+            }
+            if save_pct is not None:
+                metrics["save_pct"] = round(save_pct, 4)
+            player = player_map.get(pid)
+            pickable.append(
+                {
+                    "player_id": pid,
+                    "name": player.full_name if player else str(pid),
+                    "team": recent_team.get(pid),
+                    "position": player.position_code if player else None,
+                    "games_played": int(gp),
+                    "fp": round(fp, 1),
+                    "fp_per_game": round(fp / gp, 2) if gp else None,
+                    "metrics": metrics,
+                }
+            )
+
+        pickable.sort(key=lambda p: p["fp"], reverse=True)
+        for rank, row in enumerate(pickable[:limit], start=1):
+            row["rank"] = rank
+
+        return {
+            "role": stat_type,
+            "preset": preset,
+            "preset_label": meta["label"],
+            "preset_tagline": meta["tagline"],
+            "results": pickable[:limit],
+        }
 
     async def _season_leaderboard(
         self, model, season_id, game_type, column, limit, min_games

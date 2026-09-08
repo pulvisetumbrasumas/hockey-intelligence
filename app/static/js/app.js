@@ -32,24 +32,68 @@
   };
 
   const account = {
-    get() { return store.get("account", null); },
-    save(p) { store.set("account", p); },
-    clear() { store.set("account", null); },
+    get() { return store.get("session", null); },
+    token() { const s = store.get("session", null); return s && s.token ? s.token : null; },
+    save(p) { store.set("session", p); },
+    clear() { store.set("session", null); },
   };
 
+  let cachedServerFavorites = [];
   const favorites = {
-    list() { return store.get("favorites", []); },
-    has(type, id) { return favorites.list().some((f) => f.type === type && f.id === id); },
+    list() {
+      if (account.token()) return cachedServerFavorites;
+      return store.get("favorites", []);
+    },
+    has(type, id) {
+      return favorites.list().some(
+        (f) => (f.item_type || f.type) === type && String(f.item_key || f.id) === String(id)
+      );
+    },
     toggle(item) {
-      let list = favorites.list();
-      if (favorites.has(item.type, item.id)) {
-        list = list.filter((f) => !(f.type === item.type && f.id === item.id));
+      let list = account.token() ? cachedServerFavorites : store.get("favorites", []);
+      const exists = list.some(
+        (f) => (f.item_type || f.type) === item.type && String(f.item_key || f.id) === String(item.id)
+      );
+      if (exists) {
+        list = list.filter(
+          (f) => !((f.item_type || f.type) === item.type && String(f.item_key || f.id) === String(item.id))
+        );
       } else {
-        list.push(item);
+        list.push({ item_type: item.type, item_key: item.id, label: item.name });
       }
-      store.set("favorites", list);
+      if (account.token()) {
+        cachedServerFavorites = list;
+        if (exists) apiDelete("/api/account/favorites/" + item.type + "/" + item.id).catch(() => {});
+        else apiPost("/api/account/favorites", { item_type: item.type, item_key: item.id, label: item.name }).catch(() => {});
+      } else {
+        store.set("favorites", list);
+      }
       favorites.updateBadge();
-      return favorites.has(item.type, item.id);
+      return !exists;
+    },
+    remove(item) {
+      const type = item.type || item.item_type;
+      const id = item.id != null ? item.id : item.item_key;
+      if (account.token()) {
+        cachedServerFavorites = cachedServerFavorites.filter(
+          (f) => !((f.item_type || f.type) === type && String(f.item_key || f.id) === String(id))
+        );
+        apiDelete("/api/account/favorites/" + type + "/" + id).catch(() => {});
+      } else {
+        let list = store.get("favorites", []).filter(
+          (f) => !((f.type || f.item_type) === type && String(f.id != null ? f.id : f.item_key) === String(id))
+        );
+        store.set("favorites", list);
+      }
+      favorites.updateBadge();
+    },
+    async sync() {
+      if (!account.token()) return;
+      try {
+        cachedServerFavorites = await api("/api/account/favorites");
+        cachedServerFavorites = cachedServerFavorites.favorites || [];
+      } catch (_) {}
+      favorites.updateBadge();
     },
     updateBadge() {
       const el = $("#fav-count");
@@ -61,10 +105,15 @@
   };
 
   /* ---------- API ---------- */
+  function authHeaders(extra) {
+    const h = { "Accept": "application/json", ...(extra || {}) };
+    const t = account.token();
+    if (t) h["Authorization"] = "Bearer " + t;
+    return h;
+  }
+
   async function api(path) {
-    const resp = await fetch(path, {
-      headers: { "Accept": "application/json" },
-    });
+    const resp = await fetch(path, { headers: authHeaders() });
     if (!resp.ok) {
       let detail = resp.statusText;
       try {
@@ -79,9 +128,22 @@
   async function apiPost(path, body) {
     const resp = await fetch(path, {
       method: "POST",
-      headers: { "Accept": "application/json", "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify(body),
     });
+    if (!resp.ok) {
+      let detail = resp.statusText;
+      try {
+        const body = await resp.json();
+        detail = body.detail || detail;
+      } catch (_) {}
+      throw new Error(detail);
+    }
+    return resp.json();
+  }
+
+  async function apiDelete(path) {
+    const resp = await fetch(path, { method: "DELETE", headers: authHeaders() });
     if (!resp.ok) {
       let detail = resp.statusText;
       try {
@@ -280,14 +342,23 @@
 
   function route() {
     renderNav();
-    const clean = location.hash.replace(/^#\/?/, "").split("?")[0];
-    const parts = clean.split("/").filter(Boolean);
+    const hashClean = location.hash.replace(/^#\/?/, "");
+    const [pathBits, rawQuery] = hashClean.split("?");
+    const parts = pathBits.split("/").filter(Boolean);
+    const query = {};
+    (rawQuery || "").split("&").forEach((kv) => {
+      if (!kv) return;
+      const idx = kv.indexOf("=");
+      const k = idx >= 0 ? kv.slice(0, idx) : kv;
+      const v = idx >= 0 ? kv.slice(idx + 1) : "";
+      if (k) query[decodeURIComponent(k)] = decodeURIComponent(v);
+    });
     const key = parts[0] || "home";
     const handler = ROUTES[key] || (() => "<div class='error-block'>Unknown destination.</div>");
     const view = $("#view");
     view.innerHTML = '<div class="loading-block"><div class="spinner"></div>Loading…</div>';
     Promise.resolve()
-      .then(() => handler({ parts }))
+      .then(() => handler({ parts, query }))
       .then((res) => {
         const html = typeof res === "string" ? res : res.html;
         view.innerHTML = html || "";
@@ -413,60 +484,106 @@
   }
 
   /* ---------- Account / profile ---------- */
+  function currentUser() {
+    const s = account.get();
+    return s && s.user ? s.user : null;
+  }
+
   function updateAccountUI() {
-    const a = account.get();
+    const u = currentUser();
     const avatar = $("#account-avatar");
-    const full = a && a.name ? initials(a.name) : "?";
+    const full = u ? initials(u.display_name || u.username) : "?";
     avatar.textContent = full;
-    if (a) avatar.style.borderColor = "#35d7ff";
+    if (u) avatar.style.borderColor = "#35d7ff";
+    else avatar.style.borderColor = "";
   }
 
   function bindAccountModal() {
     $("#btn-account").addEventListener("click", () => {
-      const a = account.get();
-      if (a) {
+      const u = currentUser();
+      if (u) {
         modal({
-          title: a.name,
-          sub: a.email || "Local profile",
+          title: u.display_name || u.username,
+          sub: "@" + u.username + (u.created_at ? " · member since " + String(u.created_at).slice(0, 10) : ""),
           body:
-            '<div class="factgrid"><div class="fact"><div class="k">Account type</div><div class="v">Local profile</div></div>' +
-            '<div class="fact"><div class="k">Server accounts</div><div class="v">Later phase</div></div></div>' +
-            '<p class="sub" style="margin-top:14px;">This phase keeps your profile, favorites and settings on this browser only. Full accounts (login, preferences, sync) land in a later vertical slice.</p>',
+            '<div class="factgrid"><div class="fact"><div class="k">Account type</div><div class="v">Server account</div></div>' +
+            '<div class="fact"><div class="k">Signed in</div><div class="v">Yes</div></div></div>' +
+            '<p class="sub" style="margin-top:14px;">Favorites and notification preferences sync to your account and follow you between browsers.</p>',
           actions:
             '<a class="btn ghost" href="#/favorites" data-close>My Favorites</a>' +
-            '<button class="btn red" id="signout">Sign out</button>',
+            '<button class="btn accent" id="signout">Sign out</button>' +
+            '<button class="btn red" id="delete-account">Delete account</button>',
         });
         setTimeout(() => {
           const so = $("#signout");
           if (so) so.addEventListener("click", () => {
+            const t = account.token();
             account.clear();
+            if (t) apiPost("/api/account/logout", {}).catch(() => {});
+            cachedServerFavorites = [];
+            favorites.updateBadge();
             updateAccountUI();
             closeModal();
-            toast("Signed out.");
+            toast("Signed out. Favorites returned to this browser.");
+          });
+          const del = $("#delete-account");
+          if (del) del.addEventListener("click", async () => {
+            try {
+              await apiDelete("/api/account/me");
+            } catch (_) {}
+            account.clear();
+            cachedServerFavorites = [];
+            favorites.updateBadge();
+            updateAccountUI();
+            closeModal();
+            toast("Account deleted.");
           });
         }, 0);
       } else {
+        const errEl = () =>
+          '<p class="sub" style="color:var(--red-soft);margin:10px 0 0;display:none;" id="account-err"></p>';
         modal({
           title: "Welcome",
-          sub: "Create a local profile to personalize the platform.",
+          sub: "Sign in to sync favorites and notifications across devices.",
           body:
-            '<div class="field-row"><input class="field" id="reg-name" placeholder="Display name" autocomplete="name" /></div>' +
-            '<div class="field-row"><input class="field" id="reg-email" type="email" placeholder="Email (optional)" autocomplete="email" /></div>' +
-            '<p class="sub" style="margin:4px 0 0;">Stored in this browser only — server accounts arrive in a later slice.</p>',
+            '<div class="field-row"><input class="field" id="acct-username" placeholder="Username" autocomplete="username" /></div>' +
+            '<div class="field-row"><input class="field" id="acct-display" placeholder="Display name (new accounts only)" autocomplete="nickname" /></div>' +
+            '<div class="field-row"><input class="field" id="acct-password" type="password" placeholder="Password (6+ chars)" autocomplete="current-password" /></div>' + errEl(),
           actions:
-            '<button class="btn red" id="reg-skip">Explore as guest</button>' +
-            '<button class="btn accent" id="reg-save">Create profile</button>',
+            '<button class="btn ghost" id="acct-login">Sign in</button>' +
+            '<button class="btn accent" id="acct-register">Create account</button>',
         });
         setTimeout(() => {
-          $("#reg-save").addEventListener("click", () => {
-            const name = $("#reg-name").value.trim() || "Guest Fan";
-            const email = $("#reg-email").value.trim();
-            account.save({ name, email });
-            updateAccountUI();
-            closeModal();
-            toast("Profile created — welcome, " + name + "!");
-          });
-          $("#reg-skip").addEventListener("click", () => { closeModal(); });
+          const showErr = (m) => {
+            const el = $("#account-err");
+            if (el) { el.textContent = m; el.style.display = "block"; }
+          };
+          const finish = (data) => {
+            account.save({ token: data.token, user: data.user });
+            favorites.sync().then(() => {
+              updateAccountUI();
+              closeModal();
+              toast("Welcome, " + (data.user.display_name || data.user.username) + "!");
+            });
+          };
+          const submit = async (mode) => {
+            const username = $("#acct-username").value.trim();
+            const password = $("#acct-password").value;
+            if (!username || !password) { showErr("Username and password are required."); return; }
+            try {
+              const data = mode === "register"
+                ? await apiPost("/api/account/register", {
+                    username, password,
+                    display_name: $("#acct-display").value.trim() || username,
+                  })
+                : await apiPost("/api/account/login", { username, password });
+              finish(data);
+            } catch (err) {
+              showErr(err && err.message ? err.message : "Sign-in failed.");
+            }
+          };
+          $("#acct-login").addEventListener("click", () => submit("login"));
+          $("#acct-register").addEventListener("click", () => submit("register"));
         }, 0);
       }
     });
@@ -478,16 +595,44 @@
 
   /* ---------- Notifications ---------- */
   function bindNotifications() {
-    $("#btn-bell").addEventListener("click", () => {
-      const a = account.get();
+    $("#btn-bell").addEventListener("click", async () => {
+      const u = currentUser();
+      if (!u) {
+        modal({
+          title: "Notifications",
+          sub: "Signed in required",
+          body:
+            '<div class="empty"><h4>Notifications live on your account</h4>' +
+            "<p>Create or sign in to your account, then pick the league events you care about in Settings — we'll remind you as they approach.</p></div>",
+          actions:
+            '<button class="btn accent" data-close id="notif-signin">Sign in</button>',
+        });
+        setTimeout(() => {
+          const go = $("#notif-signin");
+          if (go) go.addEventListener("click", () => { closeModal(); $("#btn-account").click(); });
+        }, 0);
+        return;
+      }
+      let items;
+      try {
+        const data = await api("/api/account/notifications");
+        items = data.notifications || [];
+      } catch (_) { items = []; }
       modal({
         title: "Notifications",
-        sub: "Local, data-driven alerts",
+        sub: "@" + u.username + " · upcoming within your lead windows",
         body:
-          '<div class="empty"><div class="glyph">🔔</div><h4>Quiet for now</h4>' +
-          "<p>Countdown and follow alerts will surface here once the events and favorite-tracking slices land. The bell indicator shown is a visual placeholder.</p></div>" +
-          '<p class="sub" style="font-size:12px;">' + escape(a ? "Profile: " + a.name + (a.email ? " · " + a.email : "") : "Guest") + "</p>",
-        actions: '<button class="btn accent" data-close>Done</button>',
+          items.length
+            ? items.map((n) =>
+                '<a class="row" style="justify-content:space-between;padding:8px 0;border-bottom:1px solid var(--line-soft);text-decoration:none;">' +
+                '<span class="grow"><span style="font-weight:600;">' + escape(n.title) + '</span>' +
+                '<span class="dim" style="display:block;font-size:12px;">' + escape(n.date || "") +
+                " · " + escape(n.source || "") + "</span></span>" +
+                '<span class="pill-tag cyan">in ' + escape(String(n.days_until)) + "d</span></a>"
+              ).join("")
+            : '<div class="empty"><h4>All quiet</h4><p>Set event windows in Settings to get head-ups here as league events approach.</p></div>',
+        actions:
+          '<a class="btn ghost" href="#/settings?section=notification-prefs" data-close>Manage preferences</a>',
       });
     });
   }
@@ -511,6 +656,7 @@
     bindNotifications();
     updateAccountUI();
     favorites.updateBadge();
+    favorites.sync();
     bootStatus();
 
     $$(".topbar [data-nav]").forEach((b) =>
@@ -524,7 +670,7 @@
   }
 
   window.HI = {
-    $, $$, escape, api, apiPost, toast, modal, closeModal,
+    $, $$, escape, api, apiPost, apiDelete, toast, modal, closeModal,
     mount, navTo, startCountdown, countdownHtml, bindCountdown, epochMs,
     fmtNum, initials, favBtn, bindFavButtons,
     favorites, account, store,

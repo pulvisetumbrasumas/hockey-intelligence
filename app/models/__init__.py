@@ -12,6 +12,7 @@ from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.models.stats_team import TeamSeasonStats
 from app.models.team import Team, TeamIdentity, TeamSeason
 from app.models.transaction import Transaction
+from app.models.user import Favorite, SessionToken, User, UserEventPref
 
 __all__ = [
     "Franchise", "Team", "TeamIdentity", "TeamSeason",
@@ -22,4 +23,5 @@ __all__ = [
     "Award", "PlayerAward",
     "Transaction", "Contract", "DraftPick",
     "DataImport", "DataSource",
+    "User", "SessionToken", "Favorite", "UserEventPref",
 ]

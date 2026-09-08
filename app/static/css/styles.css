@@ -941,6 +941,29 @@ select.field option { background: #0a0f1c; color: var(--text); }
 .pill-tag.gold { color: var(--amber); border-color: rgba(245, 195, 107, 0.3); }
 .pill-tag.cyan { color: var(--cyan); border-color: var(--line-strong); }
 
+/* ---------- Fantasy draft room ---------- */
+.fantasy-row { transition: background 0.15s ease, border-color 0.15s ease; }
+.fantasy-row:hover { background: rgba(255, 255, 255, 0.035); }
+.fantasy-row.picked { background: rgba(53, 215, 255, 0.05); }
+.fantasy-row.picked .pill-tag { opacity: 0.75; }
+.fslot .row { margin-top: 6px; }
+.fchip {
+  flex: 1 1 120px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.fchip b { font-size: 12.5px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fchip span { font-size: 10.5px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+.fchip.empty { cursor: default; border-style: dashed; background: rgba(255, 255, 255, 0.015); }
+.fchip.bench { border-color: rgba(245, 195, 107, 0.3); }
+.fchip.filled:hover { border-color: var(--cyan); box-shadow: var(--glow); }
+
 .spinner {
   width: 26px;
   height: 26px;
