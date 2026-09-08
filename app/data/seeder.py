@@ -91,7 +91,11 @@ class DataSeeder:
                         team_id=t["id"],
                         franchise_id=t.get("franchiseId"),
                         name=t.get("fullName"),
-                        city=t.get("fullName", "").rsplit(" ", 1)[-1] if " " in (t.get("fullName") or "") else "",
+                        city=(
+                            (t.get("fullName") or "").rsplit(" ", 1)[0]
+                            if " " in (t.get("fullName") or "")
+                            else ""
+                        ),
                         abbr=t.get("triCode"),
                     )
                 )

@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import api_router
 from app.core.config import get_settings
-from app.database.connection import async_session_factory, init_db
 from app.data.seeder import ensure_data_source
+from app.database.connection import async_session_factory, init_db
 
 logging.basicConfig(level=logging.INFO)
 

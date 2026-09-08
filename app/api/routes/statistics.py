@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.models import Player
@@ -44,7 +44,6 @@ async def player_season_list(
     db: AsyncSession = Depends(get_db),
 ):
     """Per-season breakdown for a player."""
-    engine = StatisticsEngine(db)
     player = await db.get(Player, player_id)
     if not player:
         raise HTTPException(status_code=404, detail=f"Player {player_id} not found.")

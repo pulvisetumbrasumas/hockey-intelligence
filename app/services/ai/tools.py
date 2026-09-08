@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-import json
-from typing import Any, Awaitable, Callable
+from typing import Any
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.player import Player
-from app.models.stats import PlayerSeasonStats, GoalieSeasonStats
+from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.models.team import Team
 from app.services.statistics.engine import StatisticsEngine
 

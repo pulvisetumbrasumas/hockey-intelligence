@@ -1,11 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
 from app.models import Player, Team
 from app.schemas.common import PlayerOut, PlayerSearchResult, SearchResponse
-
 
 router = APIRouter(prefix="/api", tags=["search"])
 

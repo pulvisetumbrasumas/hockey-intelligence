@@ -1,4 +1,5 @@
 from fastapi import APIRouter
+
 from app.api.routes import ai, players, statistics, teams
 
 api_router = APIRouter()

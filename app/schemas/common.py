@@ -1,27 +1,28 @@
+from typing import Any
+
 from pydantic import BaseModel, Field
-from typing import Any, Optional
 
 
 class PlayerOut(BaseModel):
     player_id: int
     full_name: str
-    position: Optional[str] = None
-    birth_date: Optional[str] = None
-    birth_city: Optional[str] = None
-    birth_country: Optional[str] = None
-    height: Optional[str] = None
-    weight: Optional[int] = None
-    shoots_catches: Optional[str] = None
-    draft_year: Optional[int] = None
-    draft_round: Optional[int] = None
-    draft_overall: Optional[int] = None
+    position: str | None = None
+    birth_date: str | None = None
+    birth_city: str | None = None
+    birth_country: str | None = None
+    height: str | None = None
+    weight: int | None = None
+    shoots_catches: str | None = None
+    draft_year: int | None = None
+    draft_round: int | None = None
+    draft_overall: int | None = None
     active: bool = False
 
 
 class PlayerSearchResult(BaseModel):
     player_id: int
     full_name: str
-    position: Optional[str] = None
+    position: str | None = None
     active: bool = False
 
 
@@ -35,8 +36,8 @@ class SearchResponse(BaseModel):
 class TeamOut(BaseModel):
     team_id: int
     full_name: str
-    abbreviation: Optional[str] = None
-    franchise: Optional[dict[str, Any]] = None
+    abbreviation: str | None = None
+    franchise: dict[str, Any] | None = None
     active: bool = False
     identities: list[dict[str, Any]] = []
 

@@ -1,8 +1,8 @@
-from sqlalchemy import select, func, case
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.player import Player
-from app.models.stats import PlayerSeasonStats, GoalieSeasonStats
+from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.models.stats_team import TeamSeasonStats
 
 DIMENSIONS = {
@@ -312,22 +312,30 @@ class StatisticsEngine:
                 "The available data does not establish a meaningful difference in "
                 "total scoring between these players."
             )
-        max_pts = max(stats)
-        leaders = [
-            players_stat[pid]
-            for pid, s in zip(player_ids, stats)
-            if s == max_pts
-        ]
         return notes
 
     @staticmethod
     def _dimension_interpretation(dimension: str) -> str:
         return {
-            "offense": "Raw offensive production. Which player generated more goals, assists, and points?",
-            "defense": "Available defensive evidence. Plus/minus reflects goal differential while on ice; it does not fully measure defensive reads or positioning.",
-            "puck_skill": "Puck skill proxies available in the data. Shooting percentage, possession-based time on ice, and faceoff performance where present.",
+            "offense": (
+                "Raw offensive production. Which player generated more goals, "
+                "assists, and points?"
+            ),
+            "defense": (
+                "Available defensive evidence. Plus/minus reflects goal "
+                "differential while on ice; it does not fully measure defensive "
+                "reads or positioning."
+            ),
+            "puck_skill": (
+                "Puck skill proxies available in the data. Shooting percentage, "
+                "possession-based time on ice, and faceoff performance where "
+                "present."
+            ),
             "durability": "Games played and seasons sustained at the NHL level.",
-            "efficiency": "Production relative to opportunity: points per game and scoring efficiency.",
+            "efficiency": (
+                "Production relative to opportunity: points per game and scoring "
+                "efficiency."
+            ),
         }.get(
             dimension,
             "Dimension requires additional context. Available statistics are limited.",

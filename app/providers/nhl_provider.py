@@ -1,6 +1,6 @@
-import httpx
 from typing import Any
-from urllib.parse import quote
+
+import httpx
 
 from app.core.config import get_settings
 from app.providers.base import HockeyDataProvider
