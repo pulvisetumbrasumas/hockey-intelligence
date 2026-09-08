@@ -83,22 +83,28 @@ class DataSeeder:
             team.tricode = t.get("triCode")
             team.active = 1 if t.get("franchiseId") else 0
             count += 1
-            # Create a TeamIdentity row reflecting the official team identity
+            # Create or refresh a TeamIdentity row reflecting the official identity
             existing = await self._find_identity(session, t["id"])
+            city = (
+                (t.get("fullName") or "").rsplit(" ", 1)[0]
+                if " " in (t.get("fullName") or "")
+                else ""
+            )
             if existing is None:
                 session.add(
                     TeamIdentity(
                         team_id=t["id"],
                         franchise_id=t.get("franchiseId"),
                         name=t.get("fullName"),
-                        city=(
-                            (t.get("fullName") or "").rsplit(" ", 1)[0]
-                            if " " in (t.get("fullName") or "")
-                            else ""
-                        ),
+                        city=city,
                         abbr=t.get("triCode"),
                     )
                 )
+            else:
+                existing.franchise_id = t.get("franchiseId")
+                existing.name = t.get("fullName")
+                existing.city = city
+                existing.abbr = t.get("triCode")
         await session.flush()
         await self._record_import(session, "teams", len(teams), url="team")
         return {"teams": count}
