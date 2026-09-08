@@ -68,6 +68,19 @@
         '<a class="btn sm" href="#/ai?q=' + encodeURIComponent("Situation report on the " + t.full_name) + '">Ask AI</a>' +
         "</div></div></div></div>" +
 
+        (t.championships && t.championships.length
+          ? '<div class="section"><div class="head"><h2>Trophy cabinet</h2>' +
+            '<span class="pill-tag gold">' + L(t.cup_count || 0) + " Stanley Cups</span></div>" +
+            '<div class="card"><div class="row wrap" style="gap:8px;">' +
+            t.championships.map((c) =>
+              '<span class="chip">' + HI_(c.season_label) +
+              (c.won ? " · <b>Champion</b>" : " · Finalist") +
+              (c.runner_up ? ' · <span class="muted">vs ' + HI_(c.runner_up) + "</span>" : "") +
+              "</span>"
+            ).join("") +
+            "</div></div></div>"
+          : "") +
+
         '<div class="section"><div class="head"><h2>Club history</h2></div>' +
         '<div class="card"><div class="timeline">' +
         (t.identities && t.identities.length

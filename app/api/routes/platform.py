@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.database.connection import get_db
-from app.models import Season, Team
+from app.models import Champion, Season, Team
 from app.models.stats_team import TeamSeasonStats
 from app.services.images import team_logo_url
 from app.services.statistics.engine import FANTASY_PRESETS, StatisticsEngine
@@ -306,6 +306,81 @@ async def fantasy_pool(
         for k, v in FANTASY_PRESETS.items()
     ]
     return {**pool, "presets": presets}
+
+
+def _team_digest(team_id: int | None, name: str | None, team_by_id: dict[int, Team]) -> dict | None:
+    if team_id in team_by_id:
+        t = team_by_id[team_id]
+        return {
+            "team_id": t.id,
+            "name": t.full_name,
+            "abbreviation": t.abbreviation,
+            "logo": team_logo_url(t.abbreviation),
+        }
+    if name:
+        return {"team_id": None, "name": name, "abbreviation": None, "logo": None}
+    return None
+
+
+@router.get("/champions")
+async def champion_history(
+    season_id: int | None = Query(None),
+    team_id: int | None = Query(None, description="Filter by winner or finalist team/franchise"),
+    limit: int = Query(200, ge=1, le=400),
+    db: AsyncSession = Depends(get_db),
+):
+    """Championship history: Stanley Cup winners and finalists per season."""
+    q = (
+        select(Champion, Season.formatted_id)
+        .join(Season, Season.id == Champion.season_id)
+        .order_by(Season.id.desc())
+    )
+    if season_id is not None:
+        q = q.where(Champion.season_id == season_id)
+    rows = (await db.execute(q)).all()
+
+    team_ids = {r[0].winner_team_id for r in rows} | {r[0].runner_team_id for r in rows}
+    team_ids.discard(None)
+    team_by_id: dict[int, Team] = {}
+    if team_ids:
+        team_q = await db.execute(select(Team).where(Team.id.in_(team_ids)))
+        team_by_id = {t.id: t for t in team_q.scalars()}
+
+    identity_ids: set[int] = set()
+    if team_id is not None:
+        franchise_id = None
+        target = team_by_id.get(team_id)
+        if target and target.franchise_id:
+            franchise_id = target.franchise_id
+        elif not target:
+            target = await db.get(Team, team_id)
+            franchise_id = target.franchise_id if target else None
+        if franchise_id is not None:
+            fid_q = await db.execute(select(Team.id).where(Team.franchise_id == franchise_id))
+            identity_ids = set(fid_q.scalars())
+
+    results = []
+    for champion, label in rows:
+        digest = {
+            "season_id": champion.season_id,
+            "season_label": label,
+            "winner": _team_digest(champion.winner_team_id, champion.winner_name, team_by_id),
+            "runner_up": _team_digest(champion.runner_team_id, champion.runner_name, team_by_id),
+            "champ_wins": champion.champ_wins,
+            "runner_wins": champion.runner_wins,
+            "note": champion.note,
+        }
+        if identity_ids:
+            involved = (champion.winner_team_id in identity_ids) or (
+                champion.runner_team_id in identity_ids
+            )
+            if not involved:
+                continue
+            digest["won"] = champion.winner_team_id in identity_ids
+        results.append(digest)
+        if len(results) >= limit:
+            break
+    return {"count": len(results), "results": results}
 
 
 @router.get("/standings")

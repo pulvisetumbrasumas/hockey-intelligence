@@ -1,4 +1,5 @@
 from app.models.award import Award, PlayerAward
+from app.models.championship import Champion
 from app.models.coach import Coach, TeamCoach
 from app.models.contract import Contract
 from app.models.data_import import DataImport, DataSource
@@ -22,6 +23,7 @@ __all__ = [
     "Coach", "TeamCoach", "GeneralManager", "TeamGM",
     "Award", "PlayerAward",
     "Transaction", "Contract", "DraftPick",
+    "Champion",
     "DataImport", "DataSource",
     "User", "SessionToken", "Favorite", "UserEventPref",
 ]

@@ -567,6 +567,74 @@
     };
   }
 
+  /* ---------------- Champions ---------------- */
+  async function champions(ctx) {
+    try {
+      const d = await window.HI.api("/api/champions");
+      const results = d.results || [];
+      const current = results[0];
+      const repeater = results.find((r) => r.note && /cancelled|lockout/.test(r.note || ""));
+      const teamName = (tm) => (tm ? (tm.team_id ? tm.name : tm.name) : null);
+      const teamHref = (tm) => (tm && tm.team_id ? "#/teams/" + tm.team_id : null);
+
+      const championCard =
+        '<div class="card" style="display:flex;align-items:center;gap:16px;">' +
+        (current && current.winner
+          ? '<div style="width:52px;height:52px;border-radius:14px;background:linear-gradient(135deg,#1b2a45,#0b1322);border:1px solid var(--line);display:grid;place-items:center;">' +
+            '<img src="' + (current.winner.logo || "") + '" alt="" style="max-width:34px;max-height:34px;" loading="lazy"></div>'
+          : "") +
+        '<div class="grow"><div class="eyebrow">Reigning champion · ' + HI_(current ? current.season_label : "") + "</div>" +
+        '<h2 style="margin:2px 0;">' +
+        (current && current.winner
+          ? (teamHref(current.winner)
+              ? '<a href="' + teamHref(current.winner) + '" style="text-decoration:none;">' + HI_(current.winner.name) + "</a>"
+              : HI_(current.winner.name))
+          : "—") +
+        (current && current.runner_up ? ' <span class="muted" style="font-size:15px;">def. ' + HI_(current.runner_up.name) + "</span>" : "") +
+        "</h2>" +
+        '<p class="muted" style="margin:0;">' + ((results && results.length) ? L(results.length) + " championship seasons tracked in the database" : "") + "</p></div>" +
+        '<a class="btn sm ghost" href="#/ai?q=' + encodeURIComponent("Which franchise has won the most Stanley Cups, and what years?") + '">Ask AI</a>' +
+        "</div>";
+
+      const listRows =
+        results.map((r) => {
+          const champName = r.winner ? r.winner.name : "—";
+          const runName = r.runner_up ? r.runner_up.name : "";
+          const score =
+            r.champ_wins != null && r.runner_wins != null
+              ? "<b>" + L(r.champ_wins) + "</b>–" + L(r.runner_wins)
+              : "";
+          const noted = r.note ? '<span class="muted" style="font-size:12.5px;"> · ' + HI_(r.note) + "</span>" : "";
+          return '<div class="tl-item" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">' +
+            '<div class="tl-date" style="min-width:112px;">' + HI_(r.season_label) + "</div>" +
+            '<div class="grow" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">' +
+            (r.winner && r.winner.team_id
+              ? '<a href="#/teams/' + r.winner.team_id + '" style="text-decoration:none;display:flex;align-items:center;gap:8px;">' +
+                (r.winner.logo ? '<img src="' + r.winner.logo + '" alt="" style="width:22px;height:22px;" loading="lazy">' : "") +
+                "<b>" + HI_(champName) + "</b></a>"
+              : "<b>" + HI_(champName) + "</b>") +
+            (r.runner_up && runName ? '<span class="muted">· ' + (r.runner_up.team_id ? '<a href="#/teams/' + r.runner_up.team_id + '" style="text-decoration:none;">' + HI_(runName) + "</a>" : HI_(runName)) + "</span>" : "") +
+            "</div>" +
+            '<span style="color:var(--cyan);font-weight:700;min-width:44px;text-align:right;">' + score + "</span>" +
+            noted +
+            "</div>";
+        }).join("");
+
+      return {
+        html:
+          '<h1 class="page-title">Championship History</h1>' +
+          '<p class="page-sub">The Stanley Cup, season by season — authoritative results pulled from the database, never imagined.</p>' +
+          championCard +
+          '<div class="section"><div class="head"><h2>All champions</h2><span class="pill-tag">' + L(results.length) + " seasons</span></div>" +
+          '<div class="card"><div class="timeline">' + listRows + "</div></div></div>" +
+          '<p class="panel-tip" style="margin-top:18px;">Pre-1927 challenge era: winners and finalists are recorded as historically recognized. Years without a champion (1919, 2005) are noted rather than guessed.</p>',
+        bind(view) {},
+      };
+    } catch (err) {
+      return "<div class='error-block'>" + HI_(err && err.message) + "</div>";
+    }
+  }
+
   window.HI_Schedule = schedule;
   window.HI_Events = events;
   window.HI_History = history;

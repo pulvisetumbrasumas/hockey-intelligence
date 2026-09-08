@@ -9,14 +9,23 @@ invents numbers.
 
 - **Premium cinematic web application** — a dark, glass, ice-accented shell served at
   `/` with a full desktop nav, global search, header scoreboard actions, favorites and
-  account profiles (local-first), plus a hero dashboard with a **data-driven countdown**
-  to the next season pulled from the NHL schedule API.
+  account profiles (local-first with server-backed sync), plus a hero dashboard with a
+  **data-driven countdown** to the next season pulled from the NHL schedule API.
 - **Player, team, and franchise data** from the NHL public APIs (regular season and
-  playoffs), stored locally in SQLite.
+  playoffs), stored locally in SQLite — including **110 seasons of history** from
+  1917-18 onward seeded for standings, leaders and fantasy.
 - **Deterministic statistics engine** — career/season aggregation and multi-dimensional
   player comparison (offense, defense, puck skill, durability, efficiency). It never
   declares a single "winner". Also provides season and all-time **leaderboards** for
   skater and goalie metrics (with tie handling and min-games guards for rate stats).
+- **Fantasy draft room** — pick a scoring preset (standard, bangers, pure points),
+  browse skater/goalie pools ranked by fantasy points, and draft a roster into slots
+  with autosave.
+- **Server-backed accounts** — sign up/sign in, sync favorites across devices, and
+  choose which league calendar events get a notification heads-up (derived only from
+  the platform event API, never invented).
+- **Championship history** — every Stanley Cup winner and finalist from 1918 with
+  series results and notes for the no-champion years (1919, 2005).
 - **Living league views** — schedule & scores and live-NHL boards are proxied from the
   NHL schedule endpoint; standings, career/season leaders and player pages are computed
   from the embedded database.

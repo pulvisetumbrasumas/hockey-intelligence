@@ -49,6 +49,8 @@ class TeamOut(BaseModel):
     franchise: dict[str, Any] | None = None
     active: bool = False
     identities: list[dict[str, Any]] = []
+    championships: list[dict[str, Any]] = []
+    cup_count: int = 0
 
 
 class AIQuestionIn(BaseModel):

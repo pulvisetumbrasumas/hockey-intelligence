@@ -163,13 +163,68 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   SVG logos are built by `services/images.py` from the DB (abbr + nhl_id) and resolve
   against `assets.nhle.com` (verified 200).
 - Schedule/live boards proxy the NHL schedule endpoint (short TTL cache).
-- Account + favorites are local-first (localStorage); server accounts are a later slice.
+- Account + favorites are local-first (localStorage); server-backed accounts, fantasy
+  and championship history arrived in the later slices below.
 - Compare shows per-dimension evidence + radar; no winner. Under the hood
   `puck_skill` currently lacks data (no shooting_pct in career aggregate), so that axis
   is omitted gracefully.
 - Media URLs: headshots/heroes resolve from the most recent listed team per player
   (`services/media.py`, single grouped query). Players with no stats rows get no image
   and show a monogram instead.
+
+## Slice 2 — full history seed (verified)
+
+- Background seeder ran all 110 seasons (1917-18 → 2026-27) in era chunks with retries
+  (`/tmp/opencode/seed_history.sh`); the season-id step is 10001 (a `seq 1` step blew
+  "Argument list too long"). Each era commits one giant transaction → app writes queue
+  behind it (added `PRAGMA busy_timeout = 30000` in `connection.py`); reads are fine.
+  ~3.7 min/season.
+- `seasons` count is 110; standings now resolve any historic season (1960-61 = 6 teams,
+  1979-80 = 21, 2024-25 = 32). Fixed `season_label` in `/api/standings`: the join tuple
+  was (stats, team, formatted_id) but the response used `rows[0][1]` (the Team) —
+  changed to `rows[0][2]`.
+- Career points leader = Wayne Gretzky (2857) — leaderboard depth now spans the century.
+
+## Slice 3 — fantasy draft room (verified)
+
+- `FANTASY_PRESETS` (standard/bangers/pure_points) + `get_fantasy_pool()` live in
+  `engine.py`; one career query per stat type; `save_pct` uses `saves/shots_against`.
+- Route `GET /api/fantasy/pool?stat_type=&preset=&limit=` returns pool + presets meta.
+- `misc.js` `fantasy()` is a real draft room: preset pills, skaters/goalies tabs, FP and
+  FP/GP columns, slot-based roster (2C/2LW/2RW/4D/1G + 2 bench) autosaved under
+  `hi.roster`. Verified pool: McDavid #1 standard; goalie pool headed by Tiny Thompson
+  (1938-39 era goalie) — old-goalie rate dominance is honest, not a bug.
+- Fantasy is entertainment; the engine never claims objective truth and docs/UI note it.
+
+## Slice 4 — server-side accounts (verified)
+
+- Tables `users`, `session_tokens`, `favorites`, `user_event_prefs` (migration
+  `ae10f24c7b01`). PBKDF2-HMAC-SHA256 (200k iters), opaque Bearer tokens (30 d).
+- Routes `/api/account/*`: register/login/logout, me (GET/PUT/DELETE),
+  favorites (GET/POST/DELETE by item_type/item_key, verified against Player/Team/
+  Franchise), prefs (GET/PUT), notifications (computed from `/api/events` calendar
+  within each pref's lead window — never invented dates).
+- Front-end: session-aware `app.js` (`hi.session`), `authHeaders()` Bearer on
+  api/apiPost/apiDelete, account modal = real login/register, favorites sync to server
+  when signed in (optimistic, `cachedServerFavorites`), settings has profile + synced
+  notification-pref cards, `#/settings?section=notification-prefs` deep-links.
+  Router now parses `?query` into `ctx.query`.
+- Migration was stamped (`alembic stamp`) after its DDL ran but the version bump
+  errored mid-seed-drain; tables/indexes verified present before stamping.
+
+## Slice 5 — championship history (verified)
+
+- Table `champions` (migration `c1aa4e5f9d01`): one row per season, winner/runner
+  linked to team ids when the identity exists (106/109 linked; 1919 + 2005 no-champion
+  years and pre-1926 challenge-era non-NHL winners keep name strings + notes).
+- Seeded authoritative results 1918-2026 (verified against web sources: 2025 FLA def.
+  CAR 4-1; 2026 CAR def. VGK 4-2). Series game totals omitted pre-1927 where ambiguous.
+- `/api/champions` (list, `?season_id=`, `?team_id=` franchise filter with `won` flags).
+  Team detail now returns `championships` + `cup_count` (MTL 25, CAR 2, EDM 5 — checked).
+- UI: `#/champions` page (reigning champion card, full timeline) + "Trophy cabinet" on
+  team pages. Also restored the missing `@router.get("/teams/{team_id}")` decorator in
+  `teams.py` (latent 404) and fixed async lazy-loading of relationships (MissingGreenlet)
+  by replacing `team.identities`/`team.franchise` with explicit queries.
 
 ## Remaining / known issues
 
@@ -187,9 +242,9 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 
 ## Typical next steps
 
-1. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
-2. Deeper history: seed pre-2015 seasons so career leaderboards and the History archive go back further.
-3. Team season endpoints + per-team charts; game-event/streaks engine; conference/division splits in standings.
-4. Server-side accounts (users table + migration), favorites backend, notifications tied to events.
-5. Return-of-playoff content: champions, playoffs brackets, series data per season.
-6. Fantasy slice: draft room with scoring systems over real stats.
+1. Conference/division splits in standings (`split=league|conference|division`) + teams
+   columns; then per-team season charts / game-event engine.
+2. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
+3. Playoff brackets/series data per season; seed game results for historic seasons.
+4. Team season endpoints + per-team charts; streaks engine.
+5. National licensing terms review for NHL API redistribution.

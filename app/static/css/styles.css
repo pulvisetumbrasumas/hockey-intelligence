@@ -1069,3 +1069,14 @@ select.field option { background: #0a0f1c; color: var(--text); }
   }
   .hero .krill { opacity: 0; }
 }
+.chip {
+  display:inline-flex;
+  align-items:center;
+  gap:6px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid var(--line);
+  background:rgba(255,255,255,.02);
+  font-size:12.5px;
+}
+.chip b { color:var(--cyan); }
