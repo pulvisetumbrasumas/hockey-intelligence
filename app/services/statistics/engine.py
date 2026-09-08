@@ -2,8 +2,52 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.player import Player
+from app.models.season import Season
 from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.models.stats_team import TeamSeasonStats
+
+SKATER_METRICS = {
+    "games_played": "games_played",
+    "goals": "goals",
+    "assists": "assists",
+    "points": "points",
+    "points_per_game": "points_per_game",
+    "plus_minus": "plus_minus",
+    "penalty_minutes": "penalty_minutes",
+    "power_play_goals": "pp_goals",
+    "shorthanded_goals": "sh_goals",
+    "game_winning_goals": "game_winning_goals",
+    "shots": "shots",
+    "shooting_pct": "shooting_pct",
+    "faceoff_win_pct": "faceoff_win_pct",
+    "time_on_ice_per_game": "time_on_ice_per_game",
+    "hits": "hits",
+    "blocked_shots": "blocked_shots",
+    "takeaways": "takeaways",
+}
+
+GOALIE_METRICS = {
+    "games_played": "games_played",
+    "wins": "wins",
+    "losses": "losses",
+    "ot_losses": "ot_losses",
+    "shutouts": "shutouts",
+    "goals_against": "goals_against",
+    "goals_against_average": "goals_against_average",
+    "save_pct": "save_pct",
+    "time_on_ice": "time_on_ice",
+}
+
+# rate metrics: (numerator column, denominator column, scale) — computed
+# instead of summed directly in career scope; denominator units differ
+_RATE_METRICS = {
+    ("skater", "points_per_game"): ("points", "games_played", 1),
+    ("goalie", "save_pct"): ("saves", "shots_against", 1),
+    # time_on_ice is stored in seconds; GAA is per 60 minutes
+    ("goalie", "goals_against_average"): ("goals_against", "time_on_ice", 3600),
+}
+
+_MIN_GAMES_IF_RATE = 30
 
 DIMENSIONS = {
     "offense": {
@@ -364,3 +408,177 @@ class StatisticsEngine:
                 for r in rows
             ],
         }
+
+    async def get_leaderboard(
+        self,
+        *,
+        season_id: int | None = None,
+        metric: str = "points",
+        game_type: int = 2,
+        stat_type: str = "skater",
+        limit: int = 10,
+        min_games: int | None = None,
+    ) -> dict:
+        """Season or all-time leaderboard for a single metric.
+
+        `season_id=None` returns career totals (grouped across seasons). Rate
+        metrics (points_per_game, save_pct, goals_against_average) default to a
+        30-game minimum in career scope unless `min_games` is given explicitly.
+        """
+        stat_type = stat_type.lower()
+        metrics = SKATER_METRICS if stat_type == "skater" else GOALIE_METRICS
+        if metric not in metrics:
+            raise ValueError(
+                f"Unknown {stat_type} metric '{metric}'. "
+                f"Available: {', '.join(sorted(metrics))}"
+            )
+        column = metrics[metric]
+
+        model = PlayerSeasonStats if stat_type == "skater" else GoalieSeasonStats
+
+        if season_id is not None:
+            results = await self._season_leaderboard(
+                model, season_id, game_type, column, limit, min_games
+            )
+        else:
+            results = await self._career_leaderboard(
+                model, game_type, stat_type, metric, column, limit, min_games
+            )
+
+        scope = "season" if season_id is not None else "career"
+        payload: dict = {
+            "scope": scope,
+            "season_id": season_id,
+            "game_type": game_type,
+            "stat_type": stat_type,
+            "metric": metric,
+            "limit": limit,
+            "min_games": min_games,
+            "results": results,
+        }
+        if season_id is not None:
+            season = await self.session.get(Season, season_id)
+            payload["season_label"] = season.formatted_id if season else str(season_id)
+        return payload
+
+    async def _season_leaderboard(
+        self, model, season_id, game_type, column, limit, min_games
+    ) -> list[dict]:
+        stmt = (
+            select(model, Player)
+            .join(Player, model.player_id == Player.id)
+            .where(model.season_id == season_id, model.game_type == game_type)
+        )
+        rows = (await self.session.execute(stmt)).all()
+
+        qualified = []
+        for row, player in rows:
+            value = getattr(row, column)
+            if value is None:
+                continue
+            if min_games is not None and (row.games_played or 0) < min_games:
+                continue
+            qualified.append((value, player, row))
+        qualified.sort(key=lambda t: t[0], reverse=True)
+
+        ranked = []
+        for idx, (value, player, row) in enumerate(qualified):
+            rank = idx + 1
+            if idx > 0 and value == qualified[idx - 1][0]:
+                rank = ranked[idx - 1]["rank"]
+            ranked.append(
+                {
+                    "rank": rank,
+                    "player_id": player.id,
+                    "name": player.full_name,
+                    "team": row.team_abbrevs,
+                    "position": player.position_code,
+                    "value": round(value, 4) if isinstance(value, float) else value,
+                }
+            )
+        return ranked[: self._leaderboard_cutoff(ranked, limit)]
+
+    @staticmethod
+    def _leaderboard_cutoff(ranked: list[dict], limit: int) -> int:
+        """Rank positions are stable after limit, but keep players tied with it."""
+        if len(ranked) <= limit:
+            return len(ranked)
+        cutoff_value = ranked[limit - 1]["value"]
+        idx = limit
+        while idx < len(ranked) and ranked[idx]["value"] == cutoff_value:
+            idx += 1
+        return idx
+
+    async def _career_leaderboard(
+        self, model, game_type, stat_type, metric, column, limit, min_games
+    ) -> list[dict]:
+        rows = (
+            await self.session.execute(
+                select(model).where(model.game_type == game_type)
+            )
+        ).scalars().all()
+
+        rate_sources = _RATE_METRICS.get((stat_type, metric))
+        if min_games is None and rate_sources:
+            min_games = _MIN_GAMES_IF_RATE
+
+        # bucket = [value-or-rate-numerator, rate denominator, games played]
+        buckets: dict[int, list[float]] = {}
+        recent_team: dict[int, str | None] = {}
+        for row in rows:
+            player_id = row.player_id
+            bucket = buckets.setdefault(player_id, [0.0, 0.0, 0.0])
+            bucket[2] += row.games_played or 0
+            if rate_sources:
+                num, den, scale = rate_sources
+                n = getattr(row, num)
+                d = getattr(row, den)
+                if n is None or d is None:
+                    continue
+                bucket[0] += n
+                bucket[1] += d
+            else:
+                value = getattr(row, column)
+                if value is None:
+                    continue
+                bucket[0] += value
+            if row.team_abbrevs:
+                recent_team[player_id] = row.team_abbrevs
+
+        qualified = []
+        for player_id, (num, den, games) in buckets.items():
+            if min_games is not None and games < min_games:
+                continue
+            if rate_sources:
+                _, _, scale = rate_sources
+                value = num * scale / den if den else None
+            else:
+                value = num
+            qualified.append((player_id, value))
+
+        player_ids = [pid for pid, _ in qualified]
+        player_map: dict[int, Player] = {}
+        if player_ids:
+            players = (
+                await self.session.execute(
+                    select(Player).where(Player.id.in_(player_ids))
+                )
+            ).scalars().all()
+            player_map = {p.id: p for p in players}
+
+        qualified.sort(key=lambda t: t[1], reverse=True)
+
+        ranked = []
+        for idx, (player_id, value) in enumerate(qualified, start=1):
+            player = player_map.get(player_id)
+            ranked.append(
+                {
+                    "rank": idx,
+                    "player_id": player_id,
+                    "name": player.full_name if player else str(player_id),
+                    "team": recent_team.get(player_id),
+                    "position": player.position_code if player else None,
+                    "value": round(value, 4) if isinstance(value, float) else value,
+                }
+            )
+        return ranked[: self._leaderboard_cutoff(ranked, limit)]

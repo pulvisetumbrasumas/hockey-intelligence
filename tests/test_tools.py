@@ -1,7 +1,7 @@
 """Tests for the AI tool resolvers (name/ID resolution against the database)."""
 
 from app.models.player import Player
-from app.models.stats import PlayerSeasonStats
+from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.services.ai.tools import ToolResults
 
 
@@ -14,10 +14,17 @@ async def _seed(session):
                    last_name="McDavid", position_code="C", is_goalie=0),
             Player(id=3, nhl_id=3, full_name="Artemi Panarin", first_name="Artemi",
                    last_name="Panarin", position_code="L", is_goalie=0),
+            Player(id=4, nhl_id=4, full_name="G. Starter", first_name="G.",
+                   last_name="Starter", position_code="G", is_goalie=1),
             PlayerSeasonStats(player_id=1, season_id=20242025, game_type=2,
-                              games_played=67, goals=26, assists=74, points=100),
+                              team_abbrevs="EDM", games_played=67, goals=26,
+                              assists=74, points=100),
             PlayerSeasonStats(player_id=3, season_id=20242025, game_type=2,
-                              games_played=80, goals=37, assists=52, points=89),
+                              team_abbrevs="NYR", games_played=80, goals=37,
+                              assists=52, points=89),
+            GoalieSeasonStats(player_id=4, season_id=20242025, game_type=2,
+                              team_abbrevs="TOT", games_played=55, save_pct=0.9234,
+                              saves=9234, shots_against=10000),
         ]
     )
     await session.flush()
@@ -112,3 +119,29 @@ async def test_get_player_career_stats_via_execute_by_name(session):
         "get_player_career_stats", {"full_name": "Connor McDavid"}
     )
     assert result["regular_season"]["points"] == 100
+
+
+async def test_get_league_leaders_season(session):
+    await _seed(session)
+    result = await ToolResults(session)._handle_get_league_leaders(
+        {"stat": "points", "season_id": 20242025}
+    )
+    assert result["results"][0]["name"] == "Connor McDavid"
+    assert result["results"][0]["value"] == 100
+
+
+async def test_get_league_leaders_career_goalies(session):
+    await _seed(session)
+    result = await ToolResults(session)._handle_get_league_leaders(
+        {"stat": "save_pct", "stat_type": "goalie"}
+    )
+    assert result["results"][0]["name"] == "G. Starter"
+    assert result["results"][0]["value"] == 0.9234
+
+
+async def test_get_league_leaders_returns_error_on_bad_stat(session):
+    await _seed(session)
+    result = await ToolResults(session)._handle_get_league_leaders(
+        {"stat": "mcguffins"}
+    )
+    assert "error" in result

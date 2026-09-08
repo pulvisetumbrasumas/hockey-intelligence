@@ -32,10 +32,15 @@ provider abstraction so future data sources can be added.
 - `app/providers/base.py` — `HockeyDataProvider` ABC.
 - `app/providers/nhl_provider.py` — stats + web API clients.
 - `app/data/seeder.py` — ingestion pipeline; records provenance in `data_imports`.
-- `app/services/statistics/engine.py` — deterministic aggregation + compare engine.
+- `app/services/statistics/engine.py` — deterministic aggregation + compare engine +
+  leaderboards (season or career; skater/goalie metrics; tie handling; min-games guard
+  for rate stats: points_per_game, save_pct, GAA).
 - `app/services/ai/service.py` — Ollama tool-calling loop, system prompt, health.
-- `app/services/ai/tools.py` — 10 tool schemas + `ToolResults` handlers.
+- `app/services/ai/tools.py` — 10 tool schemas + `ToolResults` handlers (incl.
+  `get_league_leaders` backed by the leaderboard engine).
 - `app/api/routes/{players,teams,statistics,ai}.py` — assembled in `routes/__init__.py`.
+- `app/static/index.html` — single-file web UI served at `/` (search, career, leaders,
+  compare, AI chat). Static mount is registered LAST so /docs, /health and /api/* win.
 - `scripts/seed.py` / `scripts/run.py` — helpers.
 
 ## How to run
@@ -59,12 +64,27 @@ ollama serve
 - `/api/search?q=McDavid` → player found
 - `/api/players/8478402` → bio profile
 - `/api/players/8478402/career` → 67 GP / 26 G / 74 A / 100 Pts / 1.493 PPG (reg) + playoffs
+- `/api/stats/leaders/season/20242025?metric=goals` → Draisaitl 52 (correct 2024-25 Rocket)
+- `/api/stats/leaders/career?metric=points` → McDavid 1082 (2015-16 onward data)
 - `POST /api/compare/players?player_ids=...&player_ids=...` → multi-dim evidence, no single winner
 - `POST /api/ai/ask` with `{"question": "..."}` → grounded, correct answer (~150s with llama3.2)
+- `/` serves the web UI (search, career + season bars, leaders, compare, AI chat)
 
 Seeded data: 109 seasons, 62 team identities, 40 franchises, **2259 players (all with
 bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs),
 12,449 skater rows + 1,267 goalie rows, 32 teams with season stats.
+
+## Records / leaders engine notes
+
+- `get_leaderboard(season_id=None|N, metric, stat_type, game_type, limit, min_games)`.
+  Career scope groups across seasons; goals/assists/points etc. are summed, while
+  points_per_game / save_pct / GAA are recomputed from raw totals (GAA scaled to 60
+  min; `time_on_ice` is stored in seconds).
+- Rate metrics default to a 30-game minimum in career scope (`_MIN_GAMES_IF_RATE`)
+  to avoid a 2-game call-up topping the PPG list; pass `min_games` to override.
+- Ties keep identical ranks (competition ranking) and extend past `limit`.
+- Goalies live only in `goalie_season_stats`; skaters have `is_goalie=0` — leaderboards
+  are therefore uncontaminated, no filter needed beyond choosing the table.
 
 ## Database migrations (Alembic)
 
@@ -115,13 +135,15 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   the `Mapped[]` conversion.
 - Alembic migration strategy added (baseline + stamped DB); `init_db` in lifespan/seed
   remains as a `create_all` convenience and is a no-op on migrated DBs.
+- Goalie rate leaderboards in a single season can surface tiny-sample backups
+  (emergency call-ups with a few minutes). Season endpoints accept `min_games` to
+  filter; the AI tool passes it when the user asks for starters/qualified goalies.
 - Two placeholder team rows exist from the API ("To be determined"/TBD, "NHL"/NHL);
   filter them out of search if they surface.
 - Establishment of NHL API redistribution/licensing terms still pending review.
 
 ## Typical next steps
 
-1. Speed up the AI loop further: streaming, per-turn `num_ctx` tuning, or a faster model.
-2. Surface the decided "no single winner" comparison as the default UX; add an
-   `OLLAMA_KEEP_ALIVE`-aware connection pool if embedding queries grow.
-3. Expand to more historical seasons or split/season endpoints as needed.
+1. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
+2. Deeper history: seed pre-2015 seasons so career leaderboards go back further.
+3. Team season endpoints + a team tab in the UI; game-event/streaks engine.

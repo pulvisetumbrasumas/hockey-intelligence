@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.player import Player
-from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
+from app.models.stats import PlayerSeasonStats
 from app.models.team import Team
 from app.services.statistics.engine import StatisticsEngine
 
@@ -222,18 +222,49 @@ TOOL_DEFINITIONS: list[dict[str, Any]] = [
         "function": {
             "name": "get_league_leaders",
             "description": (
-                "Fetch league leaders for a statistic in a given season. stat is "
-                "one of goals, assists, points, plus_minus, game_winning_goals, "
-                "shots, save_pct, shutouts, wins."
+                "Fetch league leaders for a statistic. Omit season_id for an "
+                "all-time career leaderboard, or pass season_id (e.g. 20242025 for "
+                "2024-25) for a single season. Skater stats: goals, assists, points, "
+                "points_per_game, plus_minus, game_winning_goals, power_play_goals, "
+                "shorthanded_goals, shots, shooting_pct, faceoff_win_pct, "
+                "time_on_ice_per_game, hits, blocked_shots, takeaways, games_played. "
+                "Goalie stats (stat_type='goalie'): wins, losses, shutouts, "
+                "save_pct, goals_against_average, games_played. Rate stats are "
+                "restricted to 30+ games by default in career scope; pass min_games "
+                "to override."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "season_id": {"type": "integer"},
-                    "stat": {"type": "string"},
-                    "limit": {"type": "integer"},
+                    "stat": {"type": "string", "description": "Statistic to rank."},
+                    "season_id": {
+                        "type": "integer",
+                        "description": "Season ID like 20242025; omit for career.",
+                    },
+                    "stat_type": {
+                        "type": "string",
+                        "enum": ["skater", "goalie"],
+                        "description": (
+                            "Auto-detected from stat unless set explicitly."
+                        ),
+                    },
+                    "game_type": {
+                        "type": "integer",
+                        "enum": [2, 3],
+                        "description": "2 = regular season (default), 3 = playoffs.",
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Max results, default 10.",
+                    },
+                    "min_games": {
+                        "type": "integer",
+                        "description": (
+                            "Minimum games played to qualify (rate stats only)."
+                        ),
+                    },
                 },
-                "required": ["season_id", "stat"],
+                "required": ["stat"],
             },
         },
     },
@@ -490,90 +521,29 @@ class ToolResults:
         return await self.engine.compare_players(player_ids, dims)
 
     async def _handle_get_league_leaders(self, args: dict) -> dict:
-        season = int(args.get("season_id", 0))
-        stat = args.get("stat", "points")
-        limit = min(args.get("limit") or 10, 30)
-        skater_field = {
-            "goals": "goals",
-            "assists": "assists",
-            "points": "points",
-            "plus_minus": "plus_minus",
-            "game_winning_goals": "game_winning_goals",
-            "shots": "shots",
-        }.get(stat)
-        if skater_field:
-            col = getattr(PlayerSeasonStats, skater_field)
-            subq = (
-                select(
-                    PlayerSeasonStats.player_id,
-                    PlayerSeasonStats.season_id,
-                    func.max(col).label("value"),
-                )
-                .where(
-                    PlayerSeasonStats.season_id == season,
-                    PlayerSeasonStats.game_type == 2,
-                )
-                .group_by(PlayerSeasonStats.player_id, PlayerSeasonStats.season_id)
-                .subquery()
-            )
-            result = await self.session.execute(
-                select(Player, subq.c.value)
-                .join(subq, subq.c.player_id == Player.id)
-                .order_by(subq.c.value.desc())
-                .limit(limit)
-            )
-            rows = result.all()
-            return {
-                "season_id": season,
-                "stat": stat,
-                "leaders": [
-                    {
-                        "player_id": p.id,
-                        "name": p.full_name,
-                        "position": p.position_code,
-                        "value": value,
-                    }
-                    for p, value in rows
-                ],
-            }
-        if stat in ("save_pct", "shutouts", "wins"):
-            col = {
-                "save_pct": GoalieSeasonStats.save_pct,
-                "shutouts": GoalieSeasonStats.shutouts,
-                "wins": GoalieSeasonStats.wins,
-            }[stat]
-            result = await self.session.execute(
-                select(Player, GoalieSeasonStats)
-                .join(Player, Player.id == GoalieSeasonStats.player_id)
-                .where(
-                    GoalieSeasonStats.season_id == season,
-                    GoalieSeasonStats.game_type == 2,
-                )
-                .order_by(col.desc())
-                .limit(limit)
-            )
-            rows = result.all()
-            return {
-                "season_id": season,
-                "stat": stat,
-                "leaders": [
-                    {
-                        "player_id": p.id,
-                        "name": p.full_name,
-                        "position": p.position_code,
-                        "value": self._leader_value(g, stat),
-                    }
-                    for p, g in rows
-                ],
-            }
-        return {"error": f"Unknown statistic '{stat}'."}
+        from app.services.statistics.engine import GOALIE_METRICS, SKATER_METRICS
 
-    def _leader_value(self, goalie_row, stat: str):
-        return {
-            "save_pct": goalie_row.save_pct,
-            "shutouts": goalie_row.shutouts,
-            "wins": goalie_row.wins,
-        }.get(stat)
+        stat = (args.get("stat") or "points").lower()
+        stat_type = (args.get("stat_type") or "").lower()
+        if stat_type not in ("skater", "goalie"):
+            stat_type = (
+                "goalie"
+                if stat in GOALIE_METRICS and stat not in SKATER_METRICS
+                else "skater"
+            )
+        season_raw = args.get("season_id")
+        season = int(season_raw) if season_raw not in (None, "") else None
+        try:
+            return await self.engine.get_leaderboard(
+                season_id=season,
+                metric=stat,
+                stat_type=stat_type,
+                game_type=int(args.get("game_type") or 2),
+                limit=min(args.get("limit") or 10, 50),
+                min_games=int(args["min_games"]) if args.get("min_games") else None,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
 
     async def _handle_get_team_roster(self, args: dict) -> dict:
         team_id = int(args.get("team_id", 0))

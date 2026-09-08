@@ -13,9 +13,12 @@ NHL public APIs (providers)
         │
         ▼
    Seeder ──► SQLite  ──► StatisticsEngine (deterministic)
-                         │        │
-                         ▼        ▼
-                   REST API   AI tools ←── Ollama model
+                          │        │
+                          ▼        ▼
+                    REST API   AI tools ←── Ollama model
+                          │
+                          ▼
+                  Web UI (app/static, served at /)
 ```
 
 ## Layers
@@ -52,6 +55,21 @@ Pure aggregation over ORM rows:
 - `compare_players` — multi-dimensional comparison. For every dimension
   (offense, defense, puck_skill, durability, efficiency) it reports per-player
   metric values and an interpretation. It never returns a single "winner".
+- `get_leaderboard` — season or all-time leaderboards. `season_id=None` groups
+  across seasons; totals (`points`, `wins`, …) are summed while rate metrics
+  (`points_per_game`, `save_pct`, `goals_against_average`) are recomputed from
+  raw aggregates (GAA scales by 3600 because `time_on_ice` is stored in
+  seconds). Rate metrics default to a 30-game minimum in career scope; ties use
+  competition ranking and extend past `limit`. Goalies are read from
+  `goalie_season_stats` so skater boards are never polluted by goalie rows.
+
+### Web UI (`app/static/index.html`)
+
+Single-file vanilla-JS page served at `/` via a `StaticFiles` mount. The mount is
+registered last so `/docs`, `/health`, and `/api/*` take precedence. Tabs: player
+search → profile/career/seasons (with a points-per-season bar chart), league
+leaders (season or career, skater/goalie), compare, and an AI chat that POSTs to
+`/api/ai/ask`.
 
 ### AI layer (`app/services/ai/`)
 
@@ -59,7 +77,9 @@ Pure aggregation over ORM rows:
   plus `ToolResults`, a registry of deterministic handlers backed by the
   statistics engine and database session. `_resolve_player` maps a `full_name`
   to a numeric ID in the database (rejecting ambiguous/unknown names), so the
-  model never needs to know IDs.
+  model never needs to know IDs. `get_league_leaders` is a thin wrapper over
+  `get_leaderboard` that answers "who led the league in X" season/career
+  questions; the system prompt directs the model to use it instead of guessing.
 - `service.py` — `OllamaAIService.ask()` runs the agent loop:
 
   1. Send system prompt + user question, with tool schemas.

@@ -11,10 +11,12 @@ invents numbers.
   playoffs), stored locally in SQLite.
 - **Deterministic statistics engine** — career/season aggregation and multi-dimensional
   player comparison (offense, defense, puck skill, durability, efficiency). It never
-  declares a single "winner".
+  declares a single "winner". Also provides season and all-time **leaderboards** for
+  skater and goalie metrics (with tie handling and min-games guards for rate stats).
 - **Database-grounded AI assistant** — natural-language questions are answered by an
   Ollama model that selects tools; tool results are resolved against the database and
-  fed back, so answers quote verified numbers.
+  fed back, so answers quote verified numbers. Includes a `get_league_leaders` tool for
+  "who led the league in X" questions.
 - **Provider abstraction** — new data sources can be plugged in via `HockeyDataProvider`.
 - **Historical awareness** — preserves defunct/relocated franchise identities (e.g.
   Hartford Whalers are not the Carolina Hurricanes).
@@ -51,6 +53,9 @@ Interactive docs: http://localhost:8000/docs
 
 ### Try it
 
+Open http://localhost:8000 — a lightweight web UI is served at `/` with player
+search + career charts, league leaders, a compare tool, and the AI chat.
+
 ```bash
 # Search
 curl "http://localhost:8000/api/search?q=McDavid"
@@ -58,6 +63,10 @@ curl "http://localhost:8000/api/search?q=McDavid"
 # Profile + career stats
 curl "http://localhost:8000/api/players/8478402"
 curl "http://localhost:8000/api/players/8478402/career"
+
+# Leaders (season or career; incl. ties and goalie metrics)
+curl "http://localhost:8000/api/stats/leaders/season/20242025?metric=points&stat_type=skater"
+curl "http://localhost:8000/api/stats/leaders/career?metric=points_per_game&min_games=30"
 
 # Compare (evidence per dimension, no single winner)
 curl -X POST "http://localhost:8000/api/compare/players?player_ids=8478402&player_ids=8478550"
@@ -78,9 +87,10 @@ app/
 ├── models/            # SQLAlchemy models (24 tables)
 ├── providers/         # HockeyDataProvider ABC + NHL implementation
 ├── schemas/           # API response models
-└── services/
-    ├── ai/            # Ollama tool-calling loop + tool resolvers
-    └── statistics/    # deterministic calculation engine
+├── services/
+│   ├── ai/            # Ollama tool-calling loop + tool resolvers
+│   └── statistics/    # deterministic calculation engine (incl. leaderboards)
+└── static/            # single-page web UI served at /
 ```
 
 Data flow: `NHL provider → seeder → SQLite (source of truth) → statistics engine
@@ -99,7 +109,7 @@ See [`docs/architecture.md`](docs/architecture.md) for details.
 ## Testing
 
 ```bash
-python -m pytest tests/ -q     # 22 tests
+python -m pytest tests/ -q     # 31 tests
 python -m ruff check .         # lint
 ```
 

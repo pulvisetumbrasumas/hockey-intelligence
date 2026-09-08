@@ -10,6 +10,55 @@ from app.services.statistics.engine import StatisticsEngine
 router = APIRouter(prefix="/api", tags=["statistics"])
 
 
+@router.get("/stats/leaders/season/{season_id}")
+async def season_leaders(
+    season_id: int,
+    metric: str = Query("points"),
+    game_type: int = Query(2, ge=2, le=3),
+    stat_type: str = Query("skater", pattern="^(skater|goalie)$"),
+    limit: int = Query(10, ge=1, le=100),
+    min_games: int | None = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Leaderboard for a single season."""
+    engine = StatisticsEngine(db)
+    try:
+        return await engine.get_leaderboard(
+            season_id=season_id,
+            metric=metric,
+            game_type=game_type,
+            stat_type=stat_type,
+            limit=limit,
+            min_games=min_games,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/stats/leaders/career")
+async def career_leaders(
+    metric: str = Query("points"),
+    game_type: int = Query(2, ge=2, le=3),
+    stat_type: str = Query("skater", pattern="^(skater|goalie)$"),
+    limit: int = Query(10, ge=1, le=100),
+    min_games: int | None = Query(None, ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """All-time career leaderboard (grouped across seasons)."""
+    engine = StatisticsEngine(db)
+    try:
+        return await engine.get_leaderboard(
+            season_id=None,
+            metric=metric,
+            game_type=game_type,
+            stat_type=stat_type,
+            limit=limit,
+            min_games=min_games,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.get("/players/{player_id}/career")
 async def player_career_stats(player_id: int, db: AsyncSession = Depends(get_db)):
     """Career totals computed deterministically by the statistics engine."""

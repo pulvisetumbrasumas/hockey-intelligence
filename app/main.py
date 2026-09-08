@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import api_router
 from app.core.config import get_settings
@@ -47,21 +49,10 @@ app.add_middleware(
 app.include_router(api_router)
 
 
-@app.get("/")
-async def root():
-    return {
-        "app": "Hockey Intelligence",
-        "version": "0.1.0",
-        "docs": "/docs",
-        "health": "/health",
-        "principles": {
-            "database": "source of truth",
-            "statistics_engine": "source of calculations",
-            "ollama_ai": "reasoning + explanation",
-        },
-    }
-
-
 @app.get("/health")
 async def health():
     return {"status": "ok", "model_configured": settings.ollama_model}
+
+
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
