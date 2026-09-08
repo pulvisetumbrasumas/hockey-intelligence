@@ -237,6 +237,26 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 - Standings page: season selector (all 110 seasons) + League/Conference/Division
   tabs; season leaders scope follows the picked season.
 
+## Slice 7 — AI streaming & loop speed (verified)
+
+- New `POST /api/ai/ask/stream` SSE endpoint. Events: `delta` (answer tokens as
+  generated), `tool` (a tool was resolved, status ok/error), `status` (idle
+  heartbeat every 12s if Ollama goes silent), `done` (model + provenance), `end`.
+- `OllamaAIService.ask_stream()` runs the full tool loop inside one HTTP stream
+  over a single reused `AsyncClient`; `_stream_chat` yields deltas from Ollama's
+  NDJSON and accumulates `tool_calls` lines. Tool failures keep the loop alive
+  instead of aborting.
+- AI page now consumes the stream (`window.HI.authHeaders` re-used; stream falls
+  back to the non-stream `/api/ai/ask` on any transport error). Tool chips and
+  provenance render live.
+- Verified end-to-end: "Who led the league in points in 2024-25?" → tool call
+  (get_league_leaders) at ~227s, done at ~295s, answer streamed in ~24 deltas:
+  "Nikita Kucherov … 121 points." (correct).
+- CPU reality: qwen3:4b takes ~2m45s just to emit a tool call on this machine;
+  `think:false` was unreliable with tools. The env-deployed model is
+  `llama3.2:latest`. Bigger wins require a GPU host or a smaller/faster tool
+  model — levers documented, not forced.
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,

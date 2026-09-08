@@ -672,7 +672,7 @@
   }
 
   window.HI = {
-    $, $$, escape, api, apiPost, apiDelete, toast, modal, closeModal,
+    $, $$, escape, api, apiPost, apiDelete, authHeaders, toast, modal, closeModal,
     mount, navTo, startCountdown, countdownHtml, bindCountdown, epochMs,
     fmtNum, initials, favBtn, bindFavButtons,
     favorites, account, store,

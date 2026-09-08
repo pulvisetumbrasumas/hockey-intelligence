@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -204,6 +206,157 @@ class OllamaAIService:
         self, question: str, session: AsyncSession
     ) -> dict[str, Any]:
         return await self.ask(question, session)
+
+    async def _stream_chat(
+        self,
+        client: httpx.AsyncClient,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream one Ollama /api/chat turn, yielding delta/done events.
+
+        Ollama emits NDJSON lines; tool_calls can arrive in their own line(s),
+        so they are accumulated until the `done` flag.
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "stream": True,
+            "options": self._default_options(),
+            "keep_alive": self.settings.ollama_keep_alive,
+        }
+        if tools:
+            payload["tools"] = tools
+        async with client.stream("POST", f"{self.base_url}/api/chat", json=payload) as resp:
+            resp.raise_for_status()
+            buffer = ""
+            message: dict[str, Any] = {}
+            tool_calls: list[dict[str, Any]] = []
+            model = self.model
+            idle_seq = iter(
+                ("Still planning — the local CPU is chewing on the reply…",
+                 "Still working — the reply is being written token by token…",
+                 "Still generating — this model runs everything on this machine…")
+            )
+            idle_wait_s = 12
+            lines = resp.aiter_lines()
+            while True:
+                try:
+                    line = await asyncio.wait_for(lines.__anext__(), timeout=idle_wait_s)
+                except TimeoutError:
+                    yield {"type": "status", "text": next(idle_seq, "Still generating…")}
+                    continue
+                except StopAsyncIteration:
+                    break
+                if not line.strip():
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                m = data.get("message", {})
+                content = m.get("content") or ""
+                if content:
+                    delta = content[len(buffer):] if content.startswith(buffer) else content
+                    if delta:
+                        yield {"type": "delta", "text": delta}
+                    buffer = content
+                calls = m.get("tool_calls") or []
+                if calls:
+                    tool_calls.extend(calls)
+                if data.get("done"):
+                    message = m
+                    model = data.get("model", model)
+                if not message and content:
+                    message = {"role": "assistant", "content": buffer}
+            yield {
+                "type": "done",
+                "message": message or {"role": "assistant", "content": buffer},
+                "model": model,
+                "tool_calls": tool_calls,
+            }
+
+    async def ask_stream(
+        self, question: str, session: AsyncSession | None = None
+    ) -> AsyncIterator[dict[str, Any]]:
+        """Stream an answer to a natural-language hockey question.
+
+        Yields events as they happen: {"type":"delta","text":...} answer tokens,
+        {"type":"tool",...} when a tool is resolved, and a final {"type":"done",...}.
+        The tool loop runs inside a single stream, so callers render live updates
+        instead of waiting for the complete round-trip.
+        """
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": question},
+        ]
+        tool_schemas = build_tool_schemas()
+        tool_calls_used: list[dict[str, Any]] = []
+        provenance: list[dict[str, Any]] = []
+        resolver = ToolResults(session) if session is not None else None
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            for _ in range(8):
+                content = ""
+                calls: list[dict[str, Any]] = []
+                model = self.model
+                async for ev in self._stream_chat(client, messages, tool_schemas):
+                    if ev["type"] == "delta":
+                        content += ev["text"]
+                        yield ev
+                    elif ev["type"] == "done":
+                        model = ev["model"]
+                        content = ev["message"].get("content") or content
+                        calls = ev["tool_calls"] or []
+
+                if not calls:
+                    yield {
+                        "type": "done",
+                        "model": model,
+                        "tool_calls": tool_calls_used,
+                        "provenance": provenance,
+                    }
+                    return
+
+                messages.append(
+                    {"role": "assistant", "content": content or "", "tool_calls": calls}
+                )
+                for call in calls:
+                    fn = call.get("function", {})
+                    name = fn.get("name", "")
+                    raw_args = fn.get("arguments", "{}")
+                    if isinstance(raw_args, str):
+                        try:
+                            args = json.loads(raw_args)
+                        except json.JSONDecodeError:
+                            args = {}
+                    else:
+                        args = raw_args or {}
+                    args = {k: _coerce(v) for k, v in args.items()}
+                    tool_calls_used.append({"name": name, "arguments": args})
+                    status = "ok"
+                    try:
+                        if resolver is not None:
+                            outcome = await resolver._execute(name, args)
+                            provenance.append({"tool": name, "arguments": args, "result": outcome})
+                        else:
+                            outcome = {"error": "Database session unavailable."}
+                    except Exception as exc:  # keep the loop alive on tool failures
+                        logger.warning("Tool %s failed: %s", name, exc)
+                        outcome = {"error": str(exc)}
+                        status = "error"
+                    messages.append(
+                        {"role": "tool", "content": json.dumps(outcome, default=str)}
+                    )
+                    yield {"type": "tool", "name": name, "arguments": args, "status": status}
+
+        yield {
+            "type": "done",
+            "truncated": True,
+            "model": self.model,
+            "tool_calls": tool_calls_used,
+            "provenance": provenance,
+        }
 
     async def health(self) -> dict[str, Any]:
         try:

@@ -6,21 +6,21 @@
   const HI_ = window.HI.escape;
 
   async function aiPage(ctx) {
-    const q = new URLSearchParams((ctx.hashNoHash || location.hash).split("?")[1] || "").get("q") || "";
+    const q = (ctx.query && ctx.query.q) || "";
     const html =
       '<div class="section" style="margin-top:24px;">' +
       '<div class="head">' +
       "<div><span class='eyebrow'>Local reasoning</span>" +
       '<h1 class="page-title" style="margin:2px 0 4px;">AI Hockey Analyst</h1></div>' +
       '<span class="pill-tag cyan" id="ai-status">checking</span></div>' +
-      '<p class="page-sub">Ollama runs entirely on this machine. It plans a query, resolves verified facts from the database through tools, then explains what the data shows. It cannot invent numbers — every figure is traceable in the panel.</p>' +
+      '<p class="page-sub">Ollama runs entirely on this machine. It plans a query, resolves verified facts from the database through tools, then explains what the data shows — and streams the answer as it is generated. It cannot invent numbers; every figure is traceable in the panel.</p>' +
       '<div class="card">' +
       '<div class="chat" id="chat"></div>' +
       '<div class="chat-input">' +
       '<textarea id="chat-q" placeholder="Ask anything — e.g. “Who led the league in goals in 2024-25?”" aria-label="Question"></textarea>' +
       '<button class="btn accent" id="chat-go">Ask</button>' +
       "</div>" +
-      '<p class="panel-tip" style="margin-top:12px;">CPU is slow — an answer can take one to three minutes. Keep it to a single question.</p>' +
+      '<p class="panel-tip" style="margin-top:12px;">CPU is slow, so keep it to a single question — but the answer now streams in as the model finishes paragraphs.</p>' +
       "</div></div>";
 
     return {
@@ -45,34 +45,86 @@
           busy = true;
           go.disabled = true;
           add('<span class="role">You</span>' + HI_(question), "bubble user");
-          const thinking = add('<span class="role">Analyst</span><span class="dim">Reasoning…</span>');
+          const bot = add('<span class="role">Analyst</span><span class="dim" id="ai-typing">Connecting…</span>');
           box.value = "";
           status.textContent = "working";
           status.classList.add("gold");
-          try {
+          let prose = "";
+          const showTool = (ev) => {
+            const chip = document.createElement("div");
+            chip.className = "ai-tool";
+            chip.textContent = "tool: " + HI_(ev.name || "?") + (ev.status === "error" ? " (error)" : "");
+            bot.appendChild(chip);
+            chat.scrollTop = chat.scrollHeight;
+          };
+          let lastStatus = null;
+          const showStatus = (ev) => {
+            if (ev.text === lastStatus) return;
+            lastStatus = ev.text;
+            const note = document.createElement("div");
+            note.className = "dim";
+            note.style.fontSize = "12px";
+            note.style.marginTop = "4px";
+            note.textContent = "… " + ev.text;
+            bot.appendChild(note);
+            chat.scrollTop = chat.scrollHeight;
+          };
+          const showProvenance = (proof) => {
+            if (!proof || !proof.length) return;
+            const p = document.createElement("div");
+            p.className = "provenance";
+            p.innerHTML =
+              "<b>Provenance</b>" +
+              "<ul>" + proof.map((t) =>
+                "<li><b>" + HI_(t.tool || "?") + "</b> " +
+                (t.arguments ? smallerArgs(t.arguments) : "") +
+                " → " + HI_(trimResult(t.result)) + "</li>"
+              ).join("") + "</ul>";
+            bot.appendChild(p);
+            chat.scrollTop = chat.scrollHeight;
+          };
+          const fallback = async () => {
             const res = await window.HI.apiPost("/api/ai/ask", { question: question.trim() });
-            thinking.outerHTML = "";
-            const proof = (res.provenance || []) || [];
-            add(
-              '<span class="role">Analyst</span>' + (res.answer || "No answer returned."),
-              "bubble bot"
-            );
-            if (proof.length) {
-              const p = document.createElement("div");
-              p.className = "provenance";
-              p.innerHTML =
-                "<b>Provenance</b>" +
-                "<ul>" + proof.map((t) =>
-                  "<li><b>" + HI_(t.tool || "?") + "</b> " +
-                  (t.arguments ? smallerArgs(t.arguments) : "") +
-                  " → " + HI_(trimResult(t.result)) + "</li>"
-                ).join("") + "</ul>";
-              chat.appendChild(p);
+            bot.innerHTML = '<span class="role">Analyst</span>' + (res.answer || "No answer returned.");
+            showProvenance(res.provenance || []);
+          };
+          try {
+            bot.innerHTML = '<span class="role">Analyst</span><span></span>';
+            const out = bot.querySelector("span:last-child");
+            const resp = await fetch("/api/ai/ask/stream", {
+              method: "POST",
+              headers: window.HI.authHeaders({ "Content-Type": "application/json" }),
+              body: JSON.stringify({ question: question.trim() }),
+            });
+            if (!resp.ok || !resp.body) throw new Error(resp.statusText || "stream failed");
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buf = "";
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buf += decoder.decode(value, { stream: true });
+              const parts = buf.split("\n\n");
+              buf = parts.pop() || "";
+              for (const part of parts) {
+                const line = part.trim();
+                if (!line.startsWith("data:")) continue;
+                let ev;
+                try { ev = JSON.parse(line.slice(5).trim()); } catch (_) { continue; }
+                if (ev.type === "delta") { prose += ev.text; out.textContent = prose; }
+                else if (ev.type === "tool") { showTool(ev); }
+                else if (ev.type === "status") { showStatus(ev); }
+                else if (ev.type === "done") { showProvenance(ev.provenance || []); }
+                else if (ev.type === "error") { out.textContent = "Error: " + HI_(ev.message || "unknown"); }
+              }
               chat.scrollTop = chat.scrollHeight;
             }
+            if (!prose.trim()) await fallback();
           } catch (err) {
-            thinking.outerHTML = "";
-            add("<span class='role'>Analyst</span><span style='color:var(--red-soft);'>" + HI_((err && err.message) || String(err)) + "</span>");
+            bot.innerHTML = '<span class="role">Analyst</span><span class="dim">Stream unavailable, trying direct chat…</span>';
+            try { await fallback(); } catch (err2) {
+              bot.innerHTML = '<span class="role">Analyst</span><span style="color:var(--red-soft);">' + HI_((err2 && err2.message) || String(err2)) + "</span>";
+            }
           }
           busy = false;
           go.disabled = false;

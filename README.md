@@ -31,7 +31,8 @@ invents numbers.
   from the embedded database.
 - **Database-grounded AI assistant** — natural-language questions are answered by an
   Ollama model that selects tools; tool results are resolved against the database and
-  fed back, so answers quote verified numbers. Includes a `get_league_leaders` tool for
+  fed back, so answers quote verified numbers. Answers **stream in live** (SSE) with
+  tool-activity chips and provenance. Includes a `get_league_leaders` tool for
   "who led the league in X" questions.
 - **Provider abstraction** — new data sources can be plugged in via `HockeyDataProvider`.
 - **Historical awareness** — preserves defunct/relocated franchise identities (e.g.
