@@ -36,8 +36,11 @@ pip install -e ".[dev]"
 cp .env_sample .env        # then edit as needed
 ollama serve                # in a separate terminal
 
-# Seed the database (player/team data + 2024-25 stats + bios)
-PYTHONPATH=. python scripts/seed.py 20242025
+# Create/update the schema via migrations
+alembic upgrade head
+
+# Seed the database (10 seasons: 2015-16 through 2024-25, incl. playoffs + bios)
+PYTHONPATH=. python scripts/seed.py
 
 # Run the API
 PYTHONPATH=. python -m uvicorn app.main:app --port 8000
@@ -110,12 +113,30 @@ All settings are environment variables (`.env`). Notable ones:
 | `OLLAMA_MODEL` | `llama3.2:latest` | AI model |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
 | `OLLAMA_TIMEOUT` | `420` | Tool-call latency can be high on CPU |
+| `OLLAMA_KEEP_ALIVE` | `10m` | Keep model loaded in memory between requests |
+| `DATA_SEED_SEASONS` | `20152016,...,20242025` | Default seasons for `scripts/seed.py` |
 | `NHL_STATS_API_BASE` | `https://api.nhle.com/stats/rest/en` | NHL stats API |
 | `NHL_WEB_API_BASE` | `https://api-web.nhle.com/v1` | NHL web API (bios) |
+
+## Database migrations
+
+Schema changes are managed with [Alembic](https://alembic.sqlalchemy.org):
+
+```bash
+alembic upgrade head          # apply migrations (creates the full schema on a fresh DB)
+alembic revision --autogenerate -m "describe change"   # after editing app/models
+alembic upgrade head          # apply the new migration
+```
+
+`migrations/env.py` wires Alembic to the async engine and `app.models.metadata`, and
+reads `DATABASE_URL` from `.env`. The existing dev database is stamped at head, so the
+baseline migration matches it exactly (verified: autogenerate is a no-op and `upgrade
+head` reproduces the schema on a fresh DB).
 
 ## Status & limitations
 
 - Data is sourced from the NHL's public APIs; review their terms before redistribution.
-- Schema evolves via `Base.metadata.create_all` (no Alembic migrations yet).
-- Player bios are fetched for seeded players; more historical seasons can be added with
-  `python scripts/seed.py 20152016 20242025`.
+- Seeded by default: 2015-16 through 2024-25 (regular season + playoffs) for skaters and
+  goalies, plus player bios. Add more seasons with
+  `PYTHONPATH=. python scripts/seed.py 20052006 20062007` (idempotent; bios are backfilled
+  automatically, 500 per run).

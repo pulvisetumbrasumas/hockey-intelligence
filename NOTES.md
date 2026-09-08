@@ -62,8 +62,18 @@ ollama serve
 - `POST /api/compare/players?player_ids=...&player_ids=...` → multi-dim evidence, no single winner
 - `POST /api/ai/ask` with `{"question": "..."}` → grounded, correct answer (~150s with llama3.2)
 
-Seeded data: 109 seasons, 62 team identities, 40 franchises, 1010 players (500 with bios),
-2024-25 reg + playoff stats for skaters & goalies, 32 teams with season stats.
+Seeded data: 109 seasons, 62 team identities, 40 franchises, **2259 players (all with
+bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs),
+12,449 skater rows + 1,267 goalie rows, 32 teams with season stats.
+
+## Database migrations (Alembic)
+
+- `migrations/` + `alembic.ini`; `migrations/env.py` is async, sets
+  `target_metadata` from the models and reads `DATABASE_URL` from `.env`.
+- Baseline `333a3d9a45d5` created against an empty DB; verified: `upgrade head`
+  reproduces the full schema on a fresh DB and table sets match the existing dev DB.
+- Existing dev DB is stamped at head (`alembic stamp head`).
+- Generated migrations carry E501/W291 → relaxed via per-file-ignores in pyproject.
 
 ## Bugs fixed during development (important gotchas)
 
@@ -100,20 +110,18 @@ Seeded data: 109 seasons, 62 team identities, 40 franchises, 1010 players (500 w
 
 ## Remaining / known issues
 
-- Only ~500 of 1010 players have bios (`import_missing_bios` caps at 500 per run; run
-  again to catch the rest). Optional.
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,
   package installed); stale Column-type errors in `players.py`/`teams.py` from before
   the `Mapped[]` conversion.
-- No migration strategy yet — relies on `Base.metadata.create_all`.
-- No README/docs beyond this file; no tests yet.
+- Alembic migration strategy added (baseline + stamped DB); `init_db` in lifespan/seed
+  remains as a `create_all` convenience and is a no-op on migrated DBs.
 - Two placeholder team rows exist from the API ("To be determined"/TBD, "NHL"/NHL);
   filter them out of search if they surface.
 - Establishment of NHL API redistribution/licensing terms still pending review.
 
 ## Typical next steps
 
-1. Re-run seeder to finish bios (or lower the bios cap / page the player set).
-2. Write README + docs, pick a migration approach, add tests for the statistics engine
-   and tool resolvers.
-3. Consider `keep_alive` or streaming for Ollama to speed up the loop.
+1. Speed up the AI loop further: streaming, per-turn `num_ctx` tuning, or a faster model.
+2. Surface the decided "no single winner" comparison as the default UX; add an
+   `OLLAMA_KEEP_ALIVE`-aware connection pool if embedding queries grow.
+3. Expand to more historical seasons or split/season endpoints as needed.

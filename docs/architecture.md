@@ -78,8 +78,12 @@ contracts/drafts/awards/coaches/GMs. Foreign keys on ambiguous relationships
 (e.g. `GameEvent` has player plus two assist FKs to the same table) require an
 explicit `foreign_keys=` argument.
 
-SQLite via `aiosqlite` + SQLAlchemy 2.0 `Mapped[]` models. Schema bootstrap is
-`Base.metadata.create_all`; Alembic migrations are planned but not yet in place.
+SQLite via `aiosqlite` + SQLAlchemy 2.0 `Mapped[]` models. Schema changes are managed
+with Alembic: `migrations/env.py` wires the async engine and `target_metadata` from the
+models, reading `DATABASE_URL` from `.env`. The baseline migration stamps the existing
+dev DB at head; `alembic upgrade head` reproduces the full schema on a fresh DB.
+`init_db` (`Base.metadata.create_all`) remains a convenience fallback in lifespan/seed
+and is a no-op once a DB is migrated.
 
 ## Data provenance
 
@@ -89,6 +93,7 @@ URL), so the database can explain where its rows came from.
 ## Concurrency / performance notes
 
 - The AI loop is slow on CPU-only hardware: llama3.2 ~60s per tool turn,
-  qwen3:4b ~3x that. Adjust `OLLAMA_TIMEOUT` (default 420).
+  qwen3:4b ~3x that. Adjust `OLLAMA_TIMEOUT` (default 420). Each chat request sends
+  `keep_alive` (default `10m`) so the model stays loaded between questions.
 - The model is kept configurable via `OLLAMA_MODEL`; the application code does
   not depend on any specific model.

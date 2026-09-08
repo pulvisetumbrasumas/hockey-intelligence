@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     ollama_temperature: float = 0.3
     ollama_num_ctx: int = 4096
     ollama_timeout: int = 120
+    ollama_keep_alive: str = "10m"
 
     # NHL Data Sources
     nhl_stats_api_base: str = "https://api.nhle.com/stats/rest/en"

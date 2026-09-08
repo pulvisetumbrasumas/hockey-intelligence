@@ -118,6 +118,7 @@ class OllamaAIService:
             "messages": messages,
             "stream": False,
             "options": self._default_options(),
+            "keep_alive": self.settings.ollama_keep_alive,
         }
         if tools:
             payload["tools"] = tools
