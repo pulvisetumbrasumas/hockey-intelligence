@@ -32,7 +32,12 @@ clients:
   summaries, franchises. Pagination uses `start`/`limit`; the API's `sort`
   parameter must be passed as raw JSON (never pre-encoded — httpx will
   percent-encode it once).
-- **Web API** (`api-web.nhle.com/v1`) — player landing pages for bios.
+- **Web API** (`api-web.nhle.com/v1`) — player landing pages for bios, and the
+  date-scoped schedule endpoint used by the schedule/live boards and the season
+  countdown facts (`regularSeasonStartDate` etc.).
+- **Media assets** (`assets.nhle.com`) — deterministic URLs for player headshots,
+  hero action shots, and team SVG logos, constructed by `services/images.py` from
+  database values (abbr + `nhl_id`); never per-request API calls.
 
 A new provider (e.g. a different stats feed) implements the same interface.
 
@@ -63,13 +68,28 @@ Pure aggregation over ORM rows:
   competition ranking and extend past `limit`. Goalies are read from
   `goalie_season_stats` so skater boards are never polluted by goalie rows.
 
-### Web UI (`app/static/index.html`)
+### Web UI (`app/static/`)
 
-Single-file vanilla-JS page served at `/` via a `StaticFiles` mount. The mount is
-registered last so `/docs`, `/health`, and `/api/*` take precedence. Tabs: player
-search → profile/career/seasons (with a points-per-season bar chart), league
-leaders (season or career, skater/goalie), compare, and an AI chat that POSTs to
-`/api/ai/ask`.
+A premium, cinematic single-page application served at `/` via a `StaticFiles`
+mount. The mount is registered last so `/docs`, `/health`, and `/api/*` take
+precedence.
+
+- `app.js` — hash router over 15 destinations, global search (`/` key), local
+  account + favorites (localStorage), modals, toasts, live countdown helper.
+- `css/styles.css` — the design system: dark navy/black base, ice-cyan + blue
+  gradient accent, restrained red, glass panels, thin glowing borders, tables,
+  radar canvas, timeline, LED countdown; responsive and `prefers-reduced-motion`.
+- `pages/*.js` — home (hero + data-driven countdown, scoreboard, featured player,
+  standings preview, events), players + profiles (career + season charts), teams +
+  clubs, franchises (identity timelines), standings + leaderboards, compare (radar,
+  no single winner), AI chat with provenance, live NHL, schedule, events, history,
+  fantasy (experimental watchlist), news (shell), favorites, settings.
+
+Data-backed conveniences live in `api/routes/platform.py`: `/api/season-facts`
+(merges NHL countdown dates with DB league size), `/api/events` (countdown
+timeline), `/api/schedule` (cache-proxied live slate), `/api/standings` (computed
+from `team_season_stats`), `/api/seasons` (archive), plus franchise list/detail in
+`teams.py` and franchise-aware global search.
 
 ### AI layer (`app/services/ai/`)
 

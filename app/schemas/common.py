@@ -7,6 +7,10 @@ class PlayerOut(BaseModel):
     player_id: int
     full_name: str
     position: str | None = None
+    nhl_id: int | None = None
+    headshot: str | None = None
+    hero: str | None = None
+    team_abbreviation: str | None = None
     birth_date: str | None = None
     birth_city: str | None = None
     birth_country: str | None = None
@@ -23,6 +27,10 @@ class PlayerSearchResult(BaseModel):
     player_id: int
     full_name: str
     position: str | None = None
+    nhl_id: int | None = None
+    headshot: str | None = None
+    hero: str | None = None
+    team_abbreviation: str | None = None
     active: bool = False
 
 
@@ -30,6 +38,7 @@ class SearchResponse(BaseModel):
     query: str
     players: list[PlayerSearchResult] = []
     teams: list[dict[str, Any]] = []
+    franchises: list[dict[str, Any]] = []
     count: int = 0
 
 

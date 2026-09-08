@@ -19,6 +19,16 @@ class Settings(BaseSettings):
     # NHL Data Sources
     nhl_stats_api_base: str = "https://api.nhle.com/stats/rest/en"
     nhl_web_api_base: str = "https://api-web.nhle.com/v1"
+    nhl_assets_base: str = "https://assets.nhle.com"
+    nhl_media_season: str = "20262027"
+
+    # Platform (data-driven events)
+    schedule_cache_ttl: int = 120
+    season_facts_cache_ttl: int = 21600
+    countdown_target_fallback: str = "2026-10-07"
+    trade_deadline_date: str = "2027-03-05"
+    nhl_draft_date: str = "2027-06-26"
+    all_star_date: str = "2027-02-06"
 
     # Data Seeding
     data_seed_seasons: str = "20232024,20242025"

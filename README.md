@@ -7,19 +7,27 @@ invents numbers.
 
 ## Features
 
+- **Premium cinematic web application** — a dark, glass, ice-accented shell served at
+  `/` with a full desktop nav, global search, header scoreboard actions, favorites and
+  account profiles (local-first), plus a hero dashboard with a **data-driven countdown**
+  to the next season pulled from the NHL schedule API.
 - **Player, team, and franchise data** from the NHL public APIs (regular season and
   playoffs), stored locally in SQLite.
 - **Deterministic statistics engine** — career/season aggregation and multi-dimensional
   player comparison (offense, defense, puck skill, durability, efficiency). It never
   declares a single "winner". Also provides season and all-time **leaderboards** for
   skater and goalie metrics (with tie handling and min-games guards for rate stats).
+- **Living league views** — schedule & scores and live-NHL boards are proxied from the
+  NHL schedule endpoint; standings, career/season leaders and player pages are computed
+  from the embedded database.
 - **Database-grounded AI assistant** — natural-language questions are answered by an
   Ollama model that selects tools; tool results are resolved against the database and
   fed back, so answers quote verified numbers. Includes a `get_league_leaders` tool for
   "who led the league in X" questions.
 - **Provider abstraction** — new data sources can be plugged in via `HockeyDataProvider`.
 - **Historical awareness** — preserves defunct/relocated franchise identities (e.g.
-  Hartford Whalers are not the Carolina Hurricanes).
+  Hartford Whalers are not the Carolina Hurricanes); a franchise pages marries each club
+  to its identity timeline.
 
 ## Quickstart
 
@@ -53,16 +61,32 @@ Interactive docs: http://localhost:8000/docs
 
 ### Try it
 
-Open http://localhost:8000 — a lightweight web UI is served at `/` with player
-search + career charts, league leaders, a compare tool, and the AI chat.
+Open http://localhost:8000 — the cinematic application shell. The **Home** dashboard
+shows a countdown to the next season, today's games, a featured player, standings
+preview and a league events timeline. Browse **Players**, **Teams**, **Franchises**,
+**Standings & leaders**, **Schedule**, **Compare**, **History**, an experimental
+**Fantasy** draft-room shell, and the **AI Hockey Analyst** chat. Global search (press
+`/`), favorites (☆) and a local profile live in the header.
 
 ```bash
-# Search
+# Headless API hits
+# Search players/teams/franchises
 curl "http://localhost:8000/api/search?q=McDavid"
 
 # Profile + career stats
 curl "http://localhost:8000/api/players/8478402"
 curl "http://localhost:8000/api/players/8478402/career"
+
+# Season facts (data-driven countdown target) + upcoming events
+curl "http://localhost:8000/api/season-facts"
+curl "http://localhost:8000/api/events"
+
+# Schedule proxy (today / next / YYYY-MM-DD) — live league games
+curl "http://localhost:8000/api/schedule?date=today"
+
+# Standings + tracked seasons
+curl "http://localhost:8000/api/standings?season_id=20242025"
+curl "http://localhost:8000/api/seasons"
 
 # Leaders (season or career; incl. ties and goalie metrics)
 curl "http://localhost:8000/api/stats/leaders/season/20242025?metric=points&stat_type=skater"
@@ -80,7 +104,7 @@ curl -X POST http://localhost:8000/api/ai/ask \
 
 ```
 app/
-├── api/routes/        # HTTP layer (players, teams, statistics, ai)
+├── api/routes/        # HTTP layer (players, teams, platform, statistics, ai)
 ├── core/config.py     # env-driven settings (pydantic-settings)
 ├── data/seeder.py     # ingestion pipeline from the NHL provider
 ├── database/          # async engine, sessions, init_db
@@ -89,8 +113,14 @@ app/
 ├── schemas/           # API response models
 ├── services/
 │   ├── ai/            # Ollama tool-calling loop + tool resolvers
+│   ├── images.py      # deterministic NHL media URL builders
+│   ├── media.py       # player->team media lookups from the database
 │   └── statistics/    # deterministic calculation engine (incl. leaderboards)
-└── static/            # single-page web UI served at /
+└── static/            # cinematic web application shell served at /
+    ├── css/styles.css # design system (tokens, glass, glow, responsive)
+    └── js/
+        ├── app.js         # router, nav, global search, account/favorites
+        └── pages/*.js     # home, players, teams, standings, compare, ai, misc
 ```
 
 Data flow: `NHL provider → seeder → SQLite (source of truth) → statistics engine
@@ -126,7 +156,11 @@ All settings are environment variables (`.env`). Notable ones:
 | `OLLAMA_KEEP_ALIVE` | `10m` | Keep model loaded in memory between requests |
 | `DATA_SEED_SEASONS` | `20152016,...,20242025` | Default seasons for `scripts/seed.py` |
 | `NHL_STATS_API_BASE` | `https://api.nhle.com/stats/rest/en` | NHL stats API |
-| `NHL_WEB_API_BASE` | `https://api-web.nhle.com/v1` | NHL web API (bios) |
+| `NHL_WEB_API_BASE` | `https://api-web.nhle.com/v1` | NHL web API (bios, schedule) |
+| `SCHEDULE_CACHE_TTL` | `120` | Seconds to cache the schedule proxy |
+| `SEASON_FACTS_CACHE_TTL` | `21600` | Seconds to cache season countdown facts |
+| `COUNTDOWN_TARGET_FALLBACK` | `2026-10-07` | Countdown fallback if the NHL API is unreachable |
+| `TRADE_DEADLINE_DATE` / `NHL_DRAFT_DATE` / `ALL_STAR_DATE` | `2027-03-05` / `2027-06-26` / `2027-02-06` | Calendar events |
 
 ## Database migrations
 

@@ -38,9 +38,27 @@ provider abstraction so future data sources can be added.
 - `app/services/ai/service.py` — Ollama tool-calling loop, system prompt, health.
 - `app/services/ai/tools.py` — 10 tool schemas + `ToolResults` handlers (incl.
   `get_league_leaders` backed by the leaderboard engine).
-- `app/api/routes/{players,teams,statistics,ai}.py` — assembled in `routes/__init__.py`.
-- `app/static/index.html` — single-file web UI served at `/` (search, career, leaders,
-  compare, AI chat). Static mount is registered LAST so /docs, /health and /api/* win.
+- `app/api/routes/{players,teams,platform,statistics,ai}.py` — assembled in
+  `routes/__init__.py`. `platform.py` adds season-facts, events, schedule proxy and
+  standings (computed from `team_season_stats`) plus a `seasons` archive list.
+- `app/services/images.py` — deterministic NHL media URL builders (headshots, hero
+  shots, team SVG logos via `assets.nhle.com`).
+- `app/services/media.py` — resolves each player's most recent team abbreviation from
+  `player_season_stats` (one grouped query) so the UI can build headshot/hero URLs.
+- `app/static/` — premium cinematic application shell served at `/`:
+  - `css/styles.css` — full design system (dark navy/black, ice-cyan + blue gradient
+    accent, glass surfaces, thin glowing borders, LED countdown, scoreboard, tables,
+    radar, timeline; responsive + `prefers-reduced-motion`; no external fonts).
+  - `js/app.js` — hash router, nav (15 destinations), global search (/ key), local
+    account + favorites (localStorage), notifications modal, toasts, countdown helper.
+  - `js/pages/*.js` — home (hero + data-driven countdown to 2026-27 start from
+    `/api/season-facts`, today's games, featured player = real career points leader,
+    standings preview, events), players (+profile with career/season + PPG chart),
+    teams (+club identity timeline), franchises (lineage), standings (+leaderboards),
+    compare (canvas radar, no single winner), ai (chat with provenance), live, schedule,
+    events (countdown timeline), history (seasons archive), fantasy (experimental
+    watchlist from real leaderboards), news (shell), favorites, settings.
+  - Static mount is registered LAST so /docs, /health and /api/* win.
 - `scripts/seed.py` / `scripts/run.py` — helpers.
 
 ## How to run
@@ -128,11 +146,36 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
     `search_players`.
 - Switch model any time via `OLLAMA_MODEL` in `.env` (e.g. back to `qwen3:4b`).
 
+## Phase 1 — cinematic application shell (verified)
+
+- Serves a full premium SPA at `/`: dark navy/black base, ice-cyan/blue gradient accent,
+  glass panels, thin glowing borders, LED-style countdown boxen, marquee-free hero,
+  responsive desktop-first + reduced-motion support, zero external dependencies
+  (no webfonts). Verified endpoint-by-endpoint (all 200): `/`, `/css/styles.css`,
+  each `/js/*.js`, `/api/season-facts`, `/api/events`, `/api/schedule?date=today`,
+  `/api/standings`, `/api/seasons`, `/api/search`, `/api/franchises/{id}`, `/docs`.
+- Countdown is data-driven: `/api/season-facts` merges the NHL schedule API dates
+  (regular-season start/end, playoff window) with DB league size; `/api/events` lists
+  those plus configured trade deadline/draft/all-star. The UI never hard-codes dates.
+- Standings are computed from `team_season_stats` (points → reg wins → goal diff);
+  verified 2024-25: WPG #1 (116), NJD #16. Playoff bubble = top 16 league-wide.
+- Player/team/franchise pages pull real DB data; player headshots/hero shots and team
+  SVG logos are built by `services/images.py` from the DB (abbr + nhl_id) and resolve
+  against `assets.nhle.com` (verified 200).
+- Schedule/live boards proxy the NHL schedule endpoint (short TTL cache).
+- Account + favorites are local-first (localStorage); server accounts are a later slice.
+- Compare shows per-dimension evidence + radar; no winner. Under the hood
+  `puck_skill` currently lacks data (no shooting_pct in career aggregate), so that axis
+  is omitted gracefully.
+- Media URLs: headshots/heroes resolve from the most recent listed team per player
+  (`services/media.py`, single grouped query). Players with no stats rows get no image
+  and show a monogram instead.
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,
   package installed); stale Column-type errors in `players.py`/`teams.py` from before
-  the `Mapped[]` conversion.
+  the `Mapped[]` conversion; str|None→str annotations on `full_name` in a few spots.
 - Alembic migration strategy added (baseline + stamped DB); `init_db` in lifespan/seed
   remains as a `create_all` convenience and is a no-op on migrated DBs.
 - Goalie rate leaderboards in a single season can surface tiny-sample backups
@@ -145,5 +188,8 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 ## Typical next steps
 
 1. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
-2. Deeper history: seed pre-2015 seasons so career leaderboards go back further.
-3. Team season endpoints + a team tab in the UI; game-event/streaks engine.
+2. Deeper history: seed pre-2015 seasons so career leaderboards and the History archive go back further.
+3. Team season endpoints + per-team charts; game-event/streaks engine; conference/division splits in standings.
+4. Server-side accounts (users table + migration), favorites backend, notifications tied to events.
+5. Return-of-playoff content: champions, playoffs brackets, series data per season.
+6. Fantasy slice: draft room with scoring systems over real stats.
