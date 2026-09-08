@@ -387,9 +387,15 @@ async def champion_history(
 async def standings(
     season_id: int = Query(20242025),
     game_type: int = Query(2, ge=2, le=3),
+    split: str = Query("league", pattern="^(league|conference|division)$"),
     db: AsyncSession = Depends(get_db),
 ):
-    """League standings computed from the database (team_season_stats)."""
+    """League standings computed from the database (team_season_stats).
+
+    split=league collates all teams; split=conference|division groups by the
+    current alignment (stable since 2013-14). Older seasons only have a league
+    view, so the response falls back with a note.
+    """
     rows = (
         await db.execute(
             select(TeamSeasonStats, Team, Season.formatted_id)
@@ -414,6 +420,8 @@ async def standings(
                 "name": team.full_name,
                 "abbreviation": team.abbreviation,
                 "logo": team_logo_url(team.abbreviation),
+                "conference": team.conference,
+                "division": team.division,
                 "games_played": gp,
                 "wins": stats.wins or 0,
                 "losses": stats.losses or 0,
@@ -428,16 +436,66 @@ async def standings(
                 "reg_wins": stats.wins or 0,
             }
         )
-    standings_rows.sort(
-        key=lambda r: (r["points"], r["reg_wins"], r["goal_differential"]), reverse=True
-    )
-    for index, row in enumerate(standings_rows, start=1):
-        row["rank"] = index
-        row["in_playoffs"] = index <= 16
+
+    all_split = all(r["conference"] for r in standings_rows)
+    modern_alignment = season_id >= 20132014
+    if split == "league" or not all_split or not modern_alignment:
+        effective = "league"
+        note = (
+            "Conference and division splits apply from the 2013-14 alignment."
+            if (not all_split or not modern_alignment)
+            else "League-wide view sorted by points."
+        )
+        standings_rows.sort(
+            key=lambda r: (r["points"], r["reg_wins"], r["goal_differential"]), reverse=True
+        )
+        for index, row in enumerate(standings_rows, start=1):
+            row["rank"] = index
+            row["in_playoffs"] = index <= 16
+        return {
+            "season_id": season_id,
+            "season_label": rows[0][2],
+            "game_type": game_type,
+            "split": effective,
+            "note": note,
+            "rows": standings_rows,
+        }
+
+    group_key = "division" if split == "division" else "conference"
+    group_label = "Division" if split == "division" else "Conference"
+    groups: dict[str, list[dict]] = {}
+    order: list[str] = []
+    for row in standings_rows:
+        key = (row[group_key] or "Unknown")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(row)
+    for key in order:
+        groups[key].sort(
+            key=lambda r: (r["points"], r["reg_wins"], r["goal_differential"]), reverse=True
+        )
+        for index, row in enumerate(groups[key], start=1):
+            row["rank"] = index
+            row["in_playoffs"] = False
+    playoff_ids = {
+        r["team_id"]
+        for r in sorted(
+            standings_rows, key=lambda r: (r["points"], r["reg_wins"], r["goal_differential"]),
+            reverse=True,
+        )[:16]
+    }
+    for key in order:
+        for row in groups[key]:
+            row["in_playoffs"] = row["team_id"] in playoff_ids
     return {
         "season_id": season_id,
         "season_label": rows[0][2],
         "game_type": game_type,
-        "note": "League-wide view sorted by points; conference splits return in a later slice.",
-        "rows": standings_rows,
+        "split": split,
+        "note": (
+            f"Grouped by {group_label.lower()} (2013-14 alignment); "
+            "playoff bubble = top 16 league-wide."
+        ),
+        "groups": [{"key": key, "label": key, "rows": groups[key]} for key in order],
     }

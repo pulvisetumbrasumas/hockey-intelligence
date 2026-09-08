@@ -23,42 +23,51 @@
 
   async function standings(ctx) {
     try {
-      const seasonId = 20242025;
-      const [st, facts] = await Promise.all([
-        window.HI.api("/api/standings?season_id=" + seasonId + "&game_type=2"),
-        window.HI.api("/api/season-facts").catch(() => null),
+      const selId = Number((ctx.query && ctx.query.season) || 20242025);
+      const split = (ctx.query && ctx.query.split) || "league";
+      const [seasons, st] = await Promise.all([
+        window.HI.api("/api/seasons"),
+        window.HI.api("/api/standings?season_id=" + selId + "&split=" + split),
       ]);
-      const rows = st.rows || [];
+
+      const splitTabs = [
+        ["league", "League"],
+        ["conference", "Conference"],
+        ["division", "Division"],
+      ];
+      const tabsHtml =
+        '<div class="tabs" style="margin:0;">' +
+        splitTabs
+          .map(
+            ([k, l]) =>
+              '<a class="tab' + (split === k ? " active" : "") + '" style="text-decoration:none;" ' +
+              'href="#/standings?season=' + selId + "&split=" + k + '">' + HI_(l) + "</a>"
+          )
+          .join("") +
+        "</div>";
+
+      const seasonOptions = (seasons.seasons || [])
+        .map(
+          (s) =>
+            '<option value="' + s.season_id + '"' +
+            (Number(s.season_id) === selId ? " selected" : "") + ">" +
+            HI_(s.label || s.formatted_id || s.season_id) + "</option>"
+        )
+        .join("");
+
+      const tables = st.groups
+        ? st.groups.map((g) => groupTable(g)).join("")
+        : leagueTable(st.rows || [], st);
 
       const html =
         '<h1 class="page-title">Standings</h1>' +
-        '<p class="page-sub">League table computed from the database — points, then regulation wins and goal differential as tiebreaks. Playoff bubble = top 16.</p>' +
-        '<div class="card" style="overflow-x:auto;margin-bottom:22px;">' +
-        '<table class="dtable" style="min-width:760px;">' +
-        "<thead><tr><th>#</th><th>Team</th><th class='num'>GP</th><th class='num'>W</th>" +
-        "<th class='num'>L</th><th class='num'>OT</th><th class='num'>PTS</th>" +
-        "<th class='num'>GF</th><th class='num'>GA</th><th class='num'>DIFF</th>" +
-        "<th class='num'>ROW</th><th class='num'>P%</th></tr></thead><tbody>" +
-        rows.map((r) =>
-          '<tr class="' + (r.in_playoffs ? "playoff" : "") + '">' +
-          '<td><span class="rank">' + r.rank + "</span></td>" +
-          '<td><span class="teamcell"><img alt="" loading="lazy" src="' + (r.logo || "") + '">' +
-          HI_(r.abbreviation || r.name) + "</span></td>" +
-          '<td class="num">' + L(r.games_played) + "</td>" +
-          '<td class="num">' + L(r.wins) + "</td>" +
-          '<td class="num">' + L(r.losses) + "</td>" +
-          '<td class="num">' + L(r.ot_losses || 0) + "</td>" +
-          '<td class="num" style="font-weight:700;color:var(--cyan);">' + L(r.points) + "</td>" +
-          '<td class="num">' + L(r.goals_for) + "</td>" +
-          '<td class="num">' + L(r.goals_against) + "</td>" +
-          '<td class="num' + (r.goal_differential > 0 ? '" style="color:#69e0a0;">+' : '" style="color:#ff8793;">') + L(r.goal_differential) + "</td>" +
-          '<td class="num">' + L(r.row) + "</td>" +
-          '<td class="num">' + Number(r.points_pct).toFixed(3).slice(1) + "</td>" +
-          "</tr>"
-        ).join("") +
-        "</tbody></table>" +
-        '<p class="panel-tip" style="margin-top:12px;">' + HI_(st.season_label || "2024-25") + " regular season · " +
-        HI_(st.note || "") + "</p></div>" +
+        '<p class="page-sub">League table computed from the database — points, then regulation wins and goal differential as tiebreaks. Playoff bubble = top 16 league-wide.</p>' +
+        '<div class="row wrap" style="align-items:center;gap:12px;margin-bottom:16px;">' +
+        '<select class="field" id="st-season" style="width:170px;height:38px;">' + seasonOptions + "</select>" +
+        tabsHtml +
+        "</div>" +
+        tables +
+        '<p class="panel-tip" style="margin-top:12px;">' + HI_(st.season_label || ("Season " + selId)) + " regular season · " + HI_(st.note || "") + "</p>" +
 
         '<div class="section"><div class="head">' +
         '<div><span class="eyebrow">Deterministic engine</span><h2>League leaders</h2></div>' +
@@ -66,20 +75,27 @@
         leadersBlock() +
 
         '<p class="panel-tip" style="margin-top:18px;">' +
-        "Leaderboard pools every player with regular-season games in the ten seeded seasons (2015-16 → 2024-25). Career = summed across those seasons.</p>";
+        "Leaderboard pools every player with regular-season games in the seeded seasons. Career = summed across every seeded season.</p>";
 
       return {
         html,
         async bind(view) {
+          const seasonSel = view.querySelector("#st-season");
+          seasonSel.addEventListener("change", () => {
+            location.hash = "#/standings?season=" + seasonSel.value + "&split=" + split;
+          });
           const container = view.querySelector("#leaders-block");
           const tabs = container.querySelectorAll(".tab[data-metric]");
           const sel = container.querySelector("#leaders-scope");
+          const seasonOption = sel.querySelector('option[value="season"]');
+          seasonOption.textContent = (st.season_label || selId) + " season";
           const apply = async () => {
             const metric = container.querySelector(".tab.active").dataset.metric;
             const statType = container.querySelector(".tab.active").dataset.type;
             const scope = sel.value;
             const data = await window.HI.api(
-              "/api/stats/leaders/" + (scope === "season" ? "season/20242025" : "career") +
+              "/api/stats/leaders/" +
+              (scope === "season" ? "season/" + selId : "career") +
               "?metric=" + encodeURIComponent(metric) + "&stat_type=" + statType + "&limit=10"
             );
             const rows = data.results || data.rows || [];
@@ -107,6 +123,54 @@
     } catch (err) {
       return "<div class='error-block'>" + HI_(err && err.message) + "</div>";
     }
+  }
+
+  function leagueTable(rows, st) {
+    return (
+      '<div class="card" style="overflow-x:auto;">' +
+      '<table class="dtable" style="min-width:760px;">' +
+      "<thead><tr><th>#</th><th>Team</th><th class='num'>GP</th><th class='num'>W</th>" +
+      "<th class='num'>L</th><th class='num'>OT</th><th class='num'>PTS</th>" +
+      "<th class='num'>GF</th><th class='num'>GA</th><th class='num'>DIFF</th>" +
+      "<th class='num'>ROW</th><th class='num'>P%</th></tr></thead><tbody>" +
+      rows.map(tableRow).join("") +
+      "</tbody></table></div>"
+    );
+  }
+
+  function groupTable(g) {
+    return (
+      '<div class="card" style="overflow-x:auto;margin-top:14px;">' +
+      '<div class="head" style="padding:12px 14px 6px;"><h3>' + HI_(g.label) + "</h3>" +
+      '<span class="pill-tag">' + L(g.rows.length) + " teams</span></div>" +
+      '<table class="dtable" style="min-width:760px;">' +
+      "<thead><tr><th>#</th><th>Team</th><th class='num'>GP</th><th class='num'>W</th>" +
+      "<th class='num'>L</th><th class='num'>OT</th><th class='num'>PTS</th>" +
+      "<th class='num'>GF</th><th class='num'>GA</th><th class='num'>DIFF</th>" +
+      "<th class='num'>ROW</th><th class='num'>P%</th></tr></thead><tbody>" +
+      g.rows.map(tableRow).join("") +
+      "</tbody></table></div>"
+    );
+  }
+
+  function tableRow(r) {
+    return (
+      '<tr class="' + (r.in_playoffs ? "playoff" : "") + '">' +
+      '<td><span class="rank">' + r.rank + "</span></td>" +
+      '<td><span class="teamcell"><img alt="" loading="lazy" src="' + (r.logo || "") + '">' +
+      HI_(r.abbreviation || r.name) + "</span></td>" +
+      '<td class="num">' + L(r.games_played) + "</td>" +
+      '<td class="num">' + L(r.wins) + "</td>" +
+      '<td class="num">' + L(r.losses) + "</td>" +
+      '<td class="num">' + L(r.ot_losses || 0) + "</td>" +
+      '<td class="num" style="font-weight:700;color:var(--cyan);">' + L(r.points) + "</td>" +
+      '<td class="num">' + L(r.goals_for) + "</td>" +
+      '<td class="num">' + L(r.goals_against) + "</td>" +
+      '<td class="num' + (r.goal_differential > 0 ? '" style="color:#69e0a0;">+' : '" style="color:#ff8793;">') + L(r.goal_differential) + "</td>" +
+      '<td class="num">' + L(r.row) + "</td>" +
+      '<td class="num">' + Number(r.points_pct).toFixed(3).slice(1) + "</td>" +
+      "</tr>"
+    );
   }
 
   function fmtL(v, statType) {

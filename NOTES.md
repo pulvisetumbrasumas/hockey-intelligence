@@ -226,6 +226,17 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   `teams.py` (latent 404) and fixed async lazy-loading of relationships (MissingGreenlet)
   by replacing `team.identities`/`team.franchise` with explicit queries.
 
+## Slice 6 — conference / division standings (verified)
+
+- `teams.conference` + `teams.division` columns (migration `d3b2f6a8c51e`)
+  backfilled for the 32 current clubs (2013-14 alignment, stable since).
+- `/api/standings?split=league|conference|division` groups rows for modern
+  seasons; older seasons (pre 2013-14, or any era without the alignment) fall
+  back to a league view with an explanatory note. Playoff bubble = top 16
+  league-wide regardless of split.
+- Standings page: season selector (all 110 seasons) + League/Conference/Division
+  tabs; season leaders scope follows the picked season.
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,

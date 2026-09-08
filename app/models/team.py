@@ -28,6 +28,8 @@ class Team(Base):
     first_season_id: Mapped[int | None] = mapped_column(Integer, index=True)
     last_season_id: Mapped[int | None] = mapped_column(Integer)
     active: Mapped[int | None] = mapped_column(Integer, default=1)
+    conference: Mapped[str | None] = mapped_column(String(30))
+    division: Mapped[str | None] = mapped_column(String(30))
 
     franchise: Mapped[Franchise | None] = relationship("Franchise")
     identities: Mapped[list[TeamIdentity]] = relationship(
