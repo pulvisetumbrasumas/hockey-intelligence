@@ -129,7 +129,7 @@ CHAMPIONS: list[tuple[int, str | None, str | None, int | None, int | None, str |
     (20212022, "Colorado Avalanche", "Tampa Bay Lightning", 4, 2, ""),
     (20222023, "Vegas Golden Knights", "Florida Panthers", 4, 1, ""),
     (20232024, "Florida Panthers", "Edmonton Oilers", 4, 3, ""),
-    (20242025, "Florida Panthers", "Carolina Hurricanes", 4, 1, ""),
+    (20242025, "Florida Panthers", "Edmonton Oilers", 4, 2, ""),
     (20252026, "Carolina Hurricanes", "Vegas Golden Knights", 4, 2, ""),
 ]
 

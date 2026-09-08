@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.database.connection import get_db
-from app.models import Champion, Season, Team
+from app.models import Champion, PlayoffSeries, Season, Team
 from app.models.stats_team import TeamSeasonStats
 from app.services.images import team_logo_url
 from app.services.statistics.engine import FANTASY_PRESETS, StatisticsEngine
@@ -380,6 +380,94 @@ async def champion_history(
         results.append(digest)
         if len(results) >= limit:
             break
+    return {"count": len(results), "results": results}
+
+
+@router.get("/playoffs/series")
+async def playoff_series(
+    season_id: int | None = Query(None),
+    db: AsyncSession = Depends(get_db),
+):
+    """Restored playoff series (authoritative history).
+
+    Conference finals come from the playoff_series table (16-team era,
+    1993-94 through 2025-26); the Stanley Cup Final is merged from the
+    champions table. Earlier rounds are noted as pending restoration.
+    """
+    q = (
+        select(PlayoffSeries, Season.formatted_id)
+        .join(Season, Season.id == PlayoffSeries.season_id)
+        .order_by(PlayoffSeries.season_id.desc(), PlayoffSeries.conference)
+    )
+    if season_id is not None:
+        q = q.where(PlayoffSeries.season_id == season_id)
+    rows = (await db.execute(q)).all()
+
+    cq = select(Champion, Season.formatted_id).join(Season, Season.id == Champion.season_id)
+    if season_id is not None:
+        cq = cq.where(Champion.season_id == season_id)
+    champs = (await db.execute(cq.order_by(Season.id.desc()))).all()
+
+    entries: list[dict] = []
+    for series, label in rows:
+        entries.append(
+            {
+                "season_id": series.season_id,
+                "season_label": label,
+                "round_number": series.round_number,
+                "round_label": series.round_label,
+                "conference": series.conference,
+                "winner_team_id": series.winner_team_id,
+                "winner_name": series.winner_name,
+                "loser_team_id": series.loser_team_id,
+                "loser_name": series.loser_name,
+                "winner_games": series.winner_games,
+                "loser_games": series.loser_games,
+                "note": series.note,
+            }
+        )
+    for champion, label in champs:
+        entries.append(
+            {
+                "season_id": champion.season_id,
+                "season_label": label or str(champion.season_id),
+                "round_number": 4,
+                "round_label": "Stanley Cup Final",
+                "conference": None,
+                "winner_team_id": champion.winner_team_id,
+                "winner_name": champion.winner_name,
+                "loser_team_id": champion.runner_team_id,
+                "loser_name": champion.runner_name,
+                "winner_games": champion.champ_wins,
+                "loser_games": champion.runner_wins,
+                "note": champion.note,
+            }
+        )
+
+    team_ids = {e["winner_team_id"] for e in entries} | {e["loser_team_id"] for e in entries}
+    team_ids.discard(None)
+    team_by_id: dict[int, Team] = {}
+    if team_ids:
+        team_q = await db.execute(select(Team).where(Team.id.in_(team_ids)))
+        team_by_id = {t.id: t for t in team_q.scalars()}
+
+    results: list[dict] = []
+    for e in entries:
+        results.append(
+            {
+                "season_id": e["season_id"],
+                "season_label": e["season_label"],
+                "round_number": e["round_number"],
+                "round_label": e["round_label"],
+                "conference": e["conference"],
+                "winner": _team_digest(e["winner_team_id"], e["winner_name"], team_by_id),
+                "runner_up": _team_digest(e["loser_team_id"], e["loser_name"], team_by_id),
+                "winner_games": e["winner_games"],
+                "loser_games": e["loser_games"],
+                "note": e["note"],
+            }
+        )
+    results.sort(key=lambda r: (r["season_id"], r["round_number"], r["conference"] or ""))
     return {"count": len(results), "results": results}
 
 

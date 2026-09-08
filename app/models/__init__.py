@@ -8,6 +8,7 @@ from app.models.franchise import Franchise
 from app.models.game import Game, GameEvent
 from app.models.gm import GeneralManager, TeamGM
 from app.models.player import Player, PlayerPosition, PlayerTeamSeason
+from app.models.playoff import PlayoffSeries
 from app.models.season import Season
 from app.models.stats import GoalieSeasonStats, PlayerSeasonStats
 from app.models.stats_team import TeamSeasonStats
@@ -24,6 +25,7 @@ __all__ = [
     "Award", "PlayerAward",
     "Transaction", "Contract", "DraftPick",
     "Champion",
+    "PlayoffSeries",
     "DataImport", "DataSource",
     "User", "SessionToken", "Favorite", "UserEventPref",
 ]

@@ -26,6 +26,9 @@ invents numbers.
   the platform event API, never invented).
 - **Championship history** — every Stanley Cup winner and finalist from 1918 with
   series results and notes for the no-champion years (1919, 2005).
+- **Playoff history** — conference finals restored for the 16-team playoff era
+  (1993-94 → today) plus every Cup Final, shown as per-season bracket cards with
+  series winners and game counts.
 - **Living league views** — schedule & scores and live-NHL boards are proxied from the
   NHL schedule endpoint; standings, career/season leaders and player pages are computed
   from the embedded database.

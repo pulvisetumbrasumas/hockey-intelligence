@@ -218,7 +218,8 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   linked to team ids when the identity exists (106/109 linked; 1919 + 2005 no-champion
   years and pre-1926 challenge-era non-NHL winners keep name strings + notes).
 - Seeded authoritative results 1918-2026 (verified against web sources: 2025 FLA def.
-  CAR 4-1; 2026 CAR def. VGK 4-2). Series game totals omitted pre-1927 where ambiguous.
+  EDM 4-2 — Carolina was the Conference Final opponent, not the Final; 2026 CAR def.
+  VGK 4-2). Series game totals omitted pre-1927 where ambiguous.
 - `/api/champions` (list, `?season_id=`, `?team_id=` franchise filter with `won` flags).
   Team detail now returns `championships` + `cup_count` (MTL 25, CAR 2, EDM 5 — checked).
 - UI: `#/champions` page (reigning champion card, full timeline) + "Trophy cabinet" on
@@ -257,6 +258,23 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   `llama3.2:latest`. Bigger wins require a GPU host or a smaller/faster tool
   model — levers documented, not forced.
 
+## Slice 8 — playoff series history (verified)
+
+- Table `playoff_series` (migration `a9c3b7d4e2f5`): one row per conference final
+  (round 3) with winner/loser team ids + game counts. Seeded the 16-team playoff
+  era (1993-94 → 2025-26, 64 series; skipped 2004-05 lockout). Every team name
+  resolved to a team id at seed time.
+- Data explicitly verified against web sources before seeding, correcting the two
+  surprise results: 2024-25 ECF FLA def. CAR 4-1 (Carolina's 15th straight
+  conference-final loss) and the 2024-25 Final FLA def. EDM 4-2 in Game 6 (5-1,
+  Panthers back-to-back). Also 2025 WCF EDM def. DAL 4-1, 2026 WCF VGK def. COL 4-0.
+- `/api/playoffs/series` (`?season_id=`) returns rounds 3 (conference finals) and
+  4 (Stanley Cup Final, merged from `champions`) per season, with full team digests.
+- UI: `#/playoffs` page — season selector, bracket-style cards per round with
+  winner highlighted; note that rounds 1-2 are not yet restored.
+- Fixed the previously-wrong 2024-25 champions row in the live DB + migration seed
+  (was "FLA def. CAR 4-1" → corrected to "FLA def. EDM 4-2", runner_team_id 12→22).
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,
@@ -277,5 +295,6 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
    columns; then per-team season charts / game-event engine.
 2. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
 3. Playoff brackets/series data per season; seed game results for historic seasons.
+   (Conference finals + finals restored in Slice 8; rounds 1-2 and per-game scores pending.)
 4. Team season endpoints + per-team charts; streaks engine.
 5. National licensing terms review for NHL API redistribution.
