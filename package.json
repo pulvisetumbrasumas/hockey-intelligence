@@ -1,0 +1,23 @@
+{
+  "name": "hockey-intelligence",
+  "version": "1.0.0",
+  "description": "An open-source NHL hockey intelligence platform: a FastAPI backend with a SQLite database as the source of truth, a deterministic statistics engine, and a modular Ollama-powered AI reasoning layer that explains database-verified facts — it never invents numbers.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs",
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}

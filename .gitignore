@@ -15,8 +15,17 @@ venv/
 
 # Runtime data
 *.db
+*.db-shm
+*.db-wal
 *.sqlite3
 *.sqlite
 
 # Misc
 .DS_Store
+
+# JS
+node_modules/
+
+# Tauri / Rust build output
+src-tauri/target/
+src-tauri/gen/
