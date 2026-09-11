@@ -46,13 +46,12 @@ fn project_root() -> PathBuf {
 }
 
 fn sidecar_bin(handle: &tauri::AppHandle) -> Option<PathBuf> {
-    #[cfg(target_os = "windows")]
-    let name = "hockey-server.exe";
-    #[cfg(not(target_os = "windows"))]
     let name = "hockey-server";
 
-    // 1. resource_dir — populated when the sidecar is placed alongside the app
-    //    resources at build time (CI builds).
+    // 1. resource_dir — the sidecar is embedded at build time via
+    //    `bundle.resources`; this is what makes AppImage/installer builds
+    //    self-contained (AppImage corrupts PYTHONHOME, so the python3
+    //    fallback cannot run inside it).
     if let Ok(dir) = handle.path().resource_dir() {
         let p = dir.join(name);
         if p.exists() {
@@ -73,9 +72,10 @@ fn sidecar_bin(handle: &tauri::AppHandle) -> Option<PathBuf> {
 }
 
 fn start_api(handle: &tauri::AppHandle) {
-    // Prefer a bundled Python sidecar (built with HI_SIDECAR=1); fall back to
-    // a system Python for dev. If neither works and something is already
-    // answering on the API port, bootstrap() simply connects to it below.
+    // Prefer a bundled Python sidecar (built via scripts/build_sidecar.py and
+    // embedded through bundle.resources); fall back to system Python for dev.
+    // Note: inside an AppImage the runtime corrupts PYTHONHOME, so the python3
+    // fallback cannot work there — the sidecar is what makes it self-contained.
     if let Some(bin) = sidecar_bin(handle) {
         if let Ok(child) = Command::new(bin).spawn() {
             *SERVER.lock().expect("server mutex") = Some(child);

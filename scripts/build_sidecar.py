@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Build the Hockey Intelligence server into a standalone sidecar binary.
 
-Produces a single-file executable that can be bundled into a Tauri desktop
-installer. In dev mode the Tauri shell falls back to a system Python; with
-HI_SIDECAR=1 the Rust launcher prefers the bundled binary.
+Produces a single-file executable that is bundled into a Tauri desktop
+installer as a resource (`sidecar/hockey-server`). In dev mode the Tauri
+shell falls back to a system Python; with the bundled sidecar present the
+Rust launcher prefers it.
 
 Usage:
     python scripts/build_sidecar.py [--outdir src-tauri/sidecar]
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 import platform
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -76,7 +78,6 @@ def _build() -> None:
         "--hidden-import=app.data.seeder",
         "--hidden-import=app.models",
         "--hidden-import=app.services",
-        "--runtime-tmpdir=_MEI_x",
         "--distpath",
         str(outdir),
         "--workpath",
@@ -89,9 +90,18 @@ def _build() -> None:
     print("Running:", " ".join(build_cmd))
     subprocess.run(build_cmd, check=True, cwd=str(ROOT))
 
-    # PyInstaller names the output by --name; normalise for Tauri
-    suffix = ".exe" if platform.system() == "Windows" else ""
-    produced = outdir / f"hockey-server{suffix}"
+    # PyInstaller names the output by --name. Tauri bundles the sidecar as a
+    # resource named `hockey-server` (no extension) on every platform, so on
+    # Windows we also copy the .exe to the extensionless name.
+    if platform.system() == "Windows":
+        src = outdir / "hockey-server.exe"
+        target = outdir / "hockey-server"
+        if src.exists() and not target.exists():
+            shutil.copy2(src, target)
+        produced = target
+    else:
+        produced = outdir / "hockey-server"
+
     if not produced.exists():
         print(f"ERROR: expected output not found at {produced}")
         sys.exit(1)

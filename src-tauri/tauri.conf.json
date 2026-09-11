@@ -39,6 +39,9 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
+    "resources": {
+      "sidecar/hockey-server": ""
+    },
     "shortDescription": "Cinematic, data-driven NHL hockey intelligence platform",
     "longDescription": "Hockey Intelligence — a cinematic, data-driven NHL hockey platform: standings, leaders, player & team history, championship records, and a database-grounded AI assistant. Runs its own local API."
   }
