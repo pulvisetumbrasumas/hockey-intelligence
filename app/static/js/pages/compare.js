@@ -53,8 +53,9 @@
           function addSlot(pick) {
             const div = document.createElement("div");
             div.innerHTML = slotHtml(pick || "");
-            slots.appendChild(div.firstChild);
-            wire(div.firstChild, pick);
+            const node = div.firstChild;
+            slots.appendChild(node);
+            wire(node, pick);
             refreshCount();
           }
 
