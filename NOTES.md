@@ -360,12 +360,42 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   query.
 - All 17 routes render in a jsdom harness against the live server.
 - **Desktop shell (Tauri 2)**: `src-tauri/` wraps the frontend — the webview loads
-  `http://127.0.0.1:8000`, the shell spawns `python3 -m uvicorn app.main:app` from the
-  repo root (env overrides `HI_PYTHON`, `HI_PROJECT_DIR`), polls TCP until ready, then
+  `http://127.0.0.1:8000`, the shell spawns a **Python sidecar** if present (see
+  Slice 12) else falls back to `python3 -m uvicorn app.main:app` (env overrides
+  `HI_PYTHON`, `HI_PROJECT_DIR`, `HI_SIDECAR`), polls TCP until ready, then
   `window.location.replace`s the window there, and kills the child on exit. `cargo run`
   from `src-tauri/` works with no Node involvement (tauri-build embeds `app/static`).
-  Dev-only for now: `bundle.active` is false and `icons/` holds a placeholder RGBA PNG,
-  so installable packages need a real icon set + `tauri-cli` before `cargo tauri build`.
+
+## Slice 12 — Python sidecar for portable desktop builds (verified)
+
+- **Frozen server entrypoint** (`scripts/sidecar_entry.py`): when frozen by
+  PyInstaller it resolves a per-user data dir (`HI_DATA_DIR` override; else
+  `%LOCALAPPDATA%\HockeyIntelligence` / `$XDG_DATA_HOME/HockeyIntelligence`), sets
+  `DATABASE_URL` to `<data_dir>/hockey_intelligence.db`, and on first launch
+  provisions the DB from the bundled Alembic migrations (`upgrade head` → schema +
+  champions + playoff series) plus a formula-generated 110 season rows, then runs
+  `uvicorn` on `127.0.0.1:8000` (`HI_PORT` override). Verified: fresh DB yields 110
+  seasons, 109 champions, 64 stored playoff series, alembic at head.
+- **Build driver** (`scripts/build_sidecar.py`): PyInstaller one-file build
+  (`--collect-all uvicorn/fastapi/starlette/sqlalchemy/pydantic/pydantic_settings`,
+  `--add-data app/static`, migrations, alembic.ini) → `src-tauri/sidecar/hockey-server`
+  (Linux, ~62 MB) / `hockey-server.exe` (Windows). Needs `requirements-build.txt`
+  (runtime deps + alembic + pyinstaller).
+- **Launcher priority** (`src-tauri/src/lib.rs`): `sidecar_bin()` looks first in
+  `resource_dir()` then next to the running executable; if the bundled sidecar
+  exists it is spawned, otherwise python fallback. Verified the release binary
+  spawned the sidecar and the SPA loaded end-to-end on the local display.
+- **Portable launcher** (`scripts/run-hockey.sh`): starts the bundled `hockey-server`
+  (or system python fallback) with `HI_DATA_DIR=<dir>/data`, waits on `/health`,
+  opens the browser, and kills the server on exit. Portable zip verified standalone
+  (migrations + seasons provisioned in a fresh `data/` dir).
+- **CI** (`.github/workflows/tauri-desktop-build.yml`): both Windows and Linux jobs
+  now install Python, pip-install build deps, run `build_sidecar.py`, then build the
+  installer, and finally package the installer + sidecar into a distribution zip.
+- **First-launch behavior**: a fresh DB has full history (seasons, champions,
+  playoff records) but zero team/player stats — `/api/standings`, `/api/conferences`
+  and career leaders 404 until the NHL-data seeder populates stats. Shipping a
+  fully-seeded DB in installers is deferred pending the licensing review (below).
 
 ## Remaining / known issues
 

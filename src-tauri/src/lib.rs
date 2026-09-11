@@ -45,9 +45,44 @@ fn project_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn start_api() {
-    let bin = python_bin();
-    let Ok(child) = Command::new(bin)
+fn sidecar_bin(handle: &tauri::AppHandle) -> Option<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let name = "hockey-server.exe";
+    #[cfg(not(target_os = "windows"))]
+    let name = "hockey-server";
+
+    // 1. resource_dir — populated when the sidecar is placed alongside the app
+    //    resources at build time (CI builds).
+    if let Ok(dir) = handle.path().resource_dir() {
+        let p = dir.join(name);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    // 2. next to the running executable — portable installs / dev with the
+    //    sidecar copied manually next to the AppImage or .exe.
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            let p = dir.join(name);
+            if p.exists() {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+fn start_api(handle: &tauri::AppHandle) {
+    // Prefer a bundled Python sidecar (built with HI_SIDECAR=1); fall back to
+    // a system Python for dev. If neither works and something is already
+    // answering on the API port, bootstrap() simply connects to it below.
+    if let Some(bin) = sidecar_bin(handle) {
+        if let Ok(child) = Command::new(bin).spawn() {
+            *SERVER.lock().expect("server mutex") = Some(child);
+            return;
+        }
+    }
+    if let Ok(child) = Command::new(python_bin())
         .args([
             "-m",
             "uvicorn",
@@ -59,12 +94,9 @@ fn start_api() {
         ])
         .current_dir(project_root())
         .spawn()
-    else {
-        // No python on PATH (or a server is already running): if something is
-        // already answering on the API port we simply connect to it below.
-        return;
-    };
-    *SERVER.lock().expect("server mutex") = Some(child);
+    {
+        *SERVER.lock().expect("server mutex") = Some(child);
+    }
 }
 
 fn api_ready() -> bool {
@@ -75,7 +107,7 @@ fn api_ready() -> bool {
 }
 
 fn bootstrap(handle: tauri::AppHandle) {
-    start_api();
+    start_api(&handle);
     let deadline = Instant::now() + BOOT_TIMEOUT;
     while !api_ready() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(400));

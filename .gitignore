@@ -29,3 +29,7 @@ node_modules/
 # Tauri / Rust build output
 src-tauri/target/
 src-tauri/gen/
+
+# Python sidecar build output
+src-tauri/sidecar/
+src-tauri/build/

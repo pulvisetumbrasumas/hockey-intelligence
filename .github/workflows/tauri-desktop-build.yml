@@ -26,16 +26,34 @@ jobs:
       - name: Install JS deps
         run: npm ci
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python build deps
+        run: pip install -r requirements-build.txt
+
+      - name: Build Python sidecar
+        run: python scripts/build_sidecar.py
+
       - name: Build Windows installer (NSIS + MSI)
         run: npm run tauri:build -- --bundles nsis,msi
+
+      - name: Package sidecar with installers
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist
+          Copy-Item src-tauri/sidecar/hockey-server.exe dist/
+          Copy-Item src-tauri/target/release/bundle/nsis/*.exe dist/
+          Copy-Item src-tauri/target/release/bundle/msi/*.msi dist/
+          Compress-Archive -Path dist/* -DestinationPath dist/hockey-intelligence-windows.zip -Force
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hockey-intelligence-windows-installers
-          path: |
-            src-tauri/target/release/bundle/nsis/*.exe
-            src-tauri/target/release/bundle/msi/*.msi
+          path: dist/
           if-no-files-found: error
 
   build-linux:
@@ -57,6 +75,17 @@ jobs:
       - name: Install JS deps
         run: npm ci
 
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Python build deps
+        run: pip install -r requirements-build.txt
+
+      - name: Build Python sidecar
+        run: python scripts/build_sidecar.py
+
       - name: Install Tauri Linux deps
         run: |
           sudo apt-get update
@@ -69,10 +98,16 @@ jobs:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: npm run tauri:build -- --bundles appimage
 
+      - name: Package sidecar with AppImage
+        run: |
+          mkdir -p dist
+          cp src-tauri/sidecar/hockey-server dist/
+          cp src-tauri/target/release/bundle/appimage/*.AppImage dist/
+          cd dist && zip -r hockey-intelligence-linux.zip ./*
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: hockey-intelligence-linux-appimage
-          path: |
-            src-tauri/target/release/bundle/appimage/*.AppImage
+          path: dist/
           if-no-files-found: error

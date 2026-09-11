@@ -81,8 +81,10 @@ Interactive docs: http://localhost:8000/docs
 ### Desktop (Tauri)
 
 A tiny Tauri 2 shell (`src-tauri/`) wraps the same frontend — the webview loads the
-FastAPI app on `http://127.0.0.1:8000` and the shell spawns the Python server
-(`python3 -m uvicorn app.main:app`) when the app starts, killing it on exit. No
+FastAPI app on `http://127.0.0.1:8000`. When present, the shell spawns a bundled
+**Python sidecar** (`hockey-server`, a PyInstaller one-file build of the API —
+see `scripts/build_sidecar.py`); otherwise it falls back to system Python
+(`python3 -m uvicorn app.main:app`). The child is killed on app exit. No
 Node/npm is involved on this path (the plain `cargo` build embeds the static app and
 an icon is committed under `src-tauri/icons/`). Requirements: Rust (cargo) + the
 webkit2gtk-4.1 dev libraries (same stack the web app needs).
@@ -94,9 +96,13 @@ cd src-tauri && cargo run        # dev shell
 ```
 
 If a server is already listening on `127.0.0.1:8000` the shell just connects to it.
-Distributable installers (`.deb/.rpm/.AppImage`) are not configured yet — set
-`bundle.active = true` in `src-tauri/tauri.conf.json` and supply a proper icon set,
-then `cargo tauri build` (needs the `tauri-cli`).
+Distributable installers (`.AppImage`, Windows NSIS/MSI) and a portable zip are
+built by the GitHub Actions workflow (`.github/workflows/tauri-desktop-build.yml`),
+which builds the Python sidecar, bundles it with the installer, and packages a
+distribution zip. A standalone portable launcher lives at `scripts/run-hockey.sh`
+(start the sidecar, open the browser). On first launch the sidecar provisions a
+fresh database (schema + champions + playoff history + 110 seasons) in a per-user
+data directory; players/teams/standings populate once the NHL-data seeder runs.
 
 ### Try it
 
