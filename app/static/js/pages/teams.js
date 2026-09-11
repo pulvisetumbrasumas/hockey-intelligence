@@ -55,6 +55,7 @@
     try {
       const t = await window.HI.api("/api/teams/" + id);
       const seasonsData = await window.HI.api("/api/teams/" + id + "/seasons");
+      const gamesInfo = await window.HI.api("/api/teams/" + id + "/games?limit=20").catch(() => null);
       const html =
         '<div class="card" style="margin-top:22px;">' +
         '<div class="row wrap" style="gap:20px;">' +
@@ -99,8 +100,18 @@
           : '<div class="empty"><h4>No identity history recorded</h4><p>Identity rows will arrive with the deeper history slice.</p></div>') +
         "</div></div></div>" +
 
-        '<p class="panel-tip" style="margin-top:18px;">Team headshots, schedules and in-season results stream in later slices. Franchise lineage lives under Franchises.</p>';
-      return { html };
+        gameLogSection(gamesInfo, id) +
+
+        '<p class="panel-tip" style="margin-top:18px;">Season results are rebuilt from box scores on record; team streaks reflect every regular-season game, with OT and shootout losses treated as point-earning losses.</p>';
+      return {
+        html,
+        bind() {
+          const sel = document.getElementById("gl-season");
+          if (sel) {
+            sel.addEventListener("change", () => refreshGameLog(id, sel.value));
+          }
+        },
+      };
     } catch (err) {
       return "<div class='error-block'>" + HI_(err && err.message) + "</div>";
     }
@@ -108,6 +119,116 @@
 
   function logoFromAbbr(abbr) {
     return abbr ? "https://assets.nhle.com/logos/nhl/svg/" + abbr.toUpperCase() + "_light.svg" : null;
+  }
+
+  /* ---------------- Game log + game-level streaks ---------------- */
+
+  function gameStreakChips(info) {
+    const st = (info && info.streaks) || {};
+    const chips = [];
+    if (st.current_streak && st.current_streak.count) {
+      const kind =
+        st.current_streak.result === "W" ? "Wins" :
+        st.current_streak.result === "OTL" ? "Point streak" : "Losses";
+      chips.push({ label: "Current streak", value: kind + " " + st.current_streak.count });
+    }
+    if (st.longest_win_streak) chips.push({ label: "Longest win streak", value: st.longest_win_streak + " games" });
+    if (st.longest_loss_streak) chips.push({ label: "Longest losing streak", value: st.longest_loss_streak + " games" });
+    if (st.longest_point_streak) chips.push({ label: "Longest point streak", value: st.longest_point_streak + " games" });
+    if (st.last_10) {
+      chips.push({
+        label: "Last 10",
+        value: st.last_10.wins + (st.last_10.ot_losses ? "-" + st.last_10.ot_losses : "") + "-" + st.last_10.losses,
+      });
+    }
+    if (st.wins != null) {
+      chips.push({
+        label: "Season",
+        value: st.wins + (st.ot_losses ? "-" + st.ot_losses : "") + "-" + st.losses,
+      });
+    }
+    return chips.length
+      ? '<div class="row wrap" style="gap:8px;margin-bottom:14px;">' +
+        chips.map((c) =>
+          '<span class="chip"><span class="muted">' + HI_(c.label) + " · </span><b>" + HI_(c.value) + "</b></span>"
+        ).join("") + "</div>"
+      : '<div class="muted" style="margin-bottom:14px;">Regular-season game log loaded — no results yet.</div>';
+  }
+
+  function gameTableRows(games) {
+    if (!games || !games.length) {
+      return '<div class="empty"><h4>No games on record</h4><p>Results for this season have not been imported yet.</p></div>';
+    }
+    return games
+      .slice()
+      .reverse()
+      .map((g) => {
+        const badge = g.result ? ("<b class='" + (g.result === "W" ? "ok" : g.result === "OTL" ? "warn" : "bad") + "'>" + g.result + "</b>") : '<b class="muted">—</b>';
+        const score = g.team_score != null && g.opponent_score != null
+          ? g.team_score + "-" + g.opponent_score
+          : "";
+        const opp = g.opponent && g.opponent.name ? HI_(g.opponent.name) : "—";
+        const home = g.is_home ? "vs" : "@";
+        const ot = g.ot ? (g.ot === "OT" ? " OT" : " SO") : "";
+        const date = (g.game_date || "").slice(0, 10);
+        return (
+          '<div class="gl-row">' +
+          '<span class="gl-date muted">' + HI_(date) + "</span>" +
+          "<span>" + badge + "</span>" +
+          '<span class="gl-opp">' + home + " " + opp + "</span>" +
+          '<span class="gl-score"><b>' + HI_(score) + "</b>" + (ot ? '<i class="muted">' + ot + "</i>" : "") + "</span>" +
+          "<span class='gl-venue muted'>" + HI_(g.venue || "") + "</span>" +
+          "</div>"
+        );
+      })
+      .join("");
+  }
+
+  function gameLogSection(info, id) {
+    if (!info || !info.games || !info.games.length) return "";
+    const seasons = (info.coverage || [])
+      .map(
+        (c) =>
+          '<option value="' + c.season_id + '"' +
+          (Number(c.season_id) === Number(info.season_id) ? " selected" : "") + ">" +
+          HI_(c.season_label) + " (" + L(c.games) + " games)</option>"
+      )
+      .join("");
+    return (
+      '<div class="section" id="gl-section"><div class="head">' +
+      '<h2>Recent games</h2>' +
+      '<span class="pill-tag cyan">Game log</span></div>' +
+      '<div class="row wrap" style="align-items:center;gap:10px;margin-bottom:12px;">' +
+      '<select class="field" id="gl-season" style="width:200px;height:38px;">' + seasons + "</select>" +
+      "</div>" +
+      '<div class="card"><div class="gl-list">' +
+      gameStreakChips(info) +
+      gameTableRows(info.games) +
+      "</div></div></div>"
+    );
+  }
+
+  async function refreshGameLog(id, seasonId) {
+    const info = await window.HI.api("/api/teams/" + id + "/games?limit=30" + (seasonId ? "&season_id=" + seasonId : ""));
+    const section = document.getElementById("gl-section");
+    if (!section) return;
+    section.innerHTML =
+      '<div class="head"><h2>Recent games</h2><span class="pill-tag cyan">Game log</span></div>' +
+      '<div class="row wrap" style="align-items:center;gap:10px;margin-bottom:12px;">' +
+      '<select class="field" id="gl-season" style="width:200px;height:38px;">' +
+      (info.coverage || []).map(
+        (c) =>
+          '<option value="' + c.season_id + '"' +
+          (Number(c.season_id) === Number(info.season_id) ? " selected" : "") + ">" +
+          HI_(c.season_label) + " (" + L(c.games) + " games)</option>"
+      ).join("") +
+      "</select></div>" +
+      '<div class="card"><div class="gl-list">' +
+      gameStreakChips(info) +
+      gameTableRows(info.games) +
+      "</div></div>";
+    const sel = document.getElementById("gl-season");
+    sel.addEventListener("change", () => refreshGameLog(id, sel.value));
   }
 
   /* ---------------- Season-by-season chart ---------------- */

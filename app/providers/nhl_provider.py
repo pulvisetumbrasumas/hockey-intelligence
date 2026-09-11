@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import httpx
@@ -135,23 +136,65 @@ class NHLDataProvider(HockeyDataProvider):
         )
         return data.get("data", []), data.get("total", 0)
 
-    async def get_games(self, season_id: int) -> list[dict[str, Any]]:
-        """Fetch schedule for a season from the web API."""
-        season_str = f"{season_id}"
-        data = await self._web_get("season", {"season": season_str})
-        games = data.get("games", [])
-        # The web API season endpoint may paginate via 'nextStartDate'
-        out = list(games)
-        next_start = data.get("nextStartDate")
+    async def _walk_schedule(self, start_date: str, end_date: str) -> list[dict[str, Any]]:
+        """Collect every game in a date window by walking the weekly schedule feed.
+
+        The NHL web API schedule endpoint returns one ``gameWeek`` (~7 days) of
+        games per request and advertises ``nextStartDate``, so a full season can
+        be walked with roughly one request per week. Games are deduplicated by
+        their globally-unique id. A tiny delay keeps the run polite.
+        """
+        client = await self._get_client()
+        seen: set[int] = set()
+        out: list[dict[str, Any]] = []
+        current = start_date
         guard = 0
-        while next_start and guard < 50:
-            data = await self._web_get(
-                "season", {"season": season_str, "startDate": next_start}
-            )
-            out.extend(data.get("games", []))
-            next_start = data.get("nextStartDate")
+        while current and current <= end_date and guard < 90:
+            resp = await client.get(f"{self.web_base}/schedule/{current}")
+            if resp.status_code != 200:
+                break
+            payload = resp.json()
+            for week in payload.get("gameWeek", []):
+                for g in week.get("games", []):
+                    gid = g.get("id")
+                    if gid is None or gid in seen:
+                        continue
+                    seen.add(gid)
+                    out.append(g)
+            nxt = payload.get("nextStartDate")
+            current = nxt if nxt and nxt > current else None
             guard += 1
+            await asyncio.sleep(0.05)
         return out
+
+    async def get_games(self, season_id: int) -> list[dict[str, Any]]:
+        """Fetch every finalized regular-season and playoff game for a season."""
+        start_year = int(str(season_id)[:4])
+        games = await self._walk_schedule(f"{start_year}-10-01", f"{start_year + 1}-06-30")
+        return [
+            g
+            for g in games
+            if g.get("season") == season_id
+            and g.get("gameType") in (2, 3)
+            and g.get("gameState") == "OFF"
+        ]
+
+    async def get_playoff_games(self, season_id: int) -> list[dict[str, Any]]:
+        """Fetch every finalized playoff (gameType 3) game for a season.
+
+        The walk starts in mid-April so late-starting playoff calendars
+        (e.g. the 1994-95 lockout season) are still captured; the ``season``
+        field on each game keeps adjacent playoff runs from leaking in.
+        """
+        start_year = int(str(season_id)[:4])
+        games = await self._walk_schedule(f"{start_year}-04-10", f"{start_year + 1}-06-30")
+        return [
+            g
+            for g in games
+            if g.get("season") == season_id
+            and g.get("gameType") == 3
+            and g.get("gameState") == "OFF"
+        ]
 
     async def get_playoff_stats(self, player_id: int) -> dict[str, Any]:
         return await self._web_get("player", {"playerId": str(player_id)})

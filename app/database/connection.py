@@ -10,12 +10,16 @@ engine = create_async_engine(
     settings.database_url,
     echo=settings.app_debug,
     connect_args={"check_same_thread": False},
+    pool_size=10,
+    max_overflow=25,
 )
 
 @event.listens_for(engine.sync_engine, "connect")
 def _set_sqlite_busy_timeout(dbapi_conn, _record):
     """Queue writers politely instead of failing while the seeder holds the lock."""
     cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode = WAL")
+    cursor.execute("PRAGMA synchronous = NORMAL")
     cursor.execute("PRAGMA busy_timeout = 30000")
     cursor.close()
 

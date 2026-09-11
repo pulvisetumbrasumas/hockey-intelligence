@@ -139,8 +139,9 @@ async def build_team_season_history(
 
     series_q = await db.execute(
         select(PlayoffSeries).where(
+            PlayoffSeries.round_number == 3,
             PlayoffSeries.winner_team_id.in_(ids)
-            | PlayoffSeries.loser_team_id.in_(ids)
+            | PlayoffSeries.loser_team_id.in_(ids),
         )
     )
     for series in series_q.scalars():

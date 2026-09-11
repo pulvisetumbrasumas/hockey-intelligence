@@ -1092,6 +1092,32 @@ select.field option { background: #0a0f1c; color: var(--text); }
   background:rgba(53,215,255,.06);
 }
 
+/* Game log rows */
+.gl-list { padding: 4px 0; }
+.gl-row {
+  display:grid;
+  grid-template-columns:88px 44px 1fr 92px minmax(0,160px);
+  align-items:center;
+  gap:12px;
+  padding:9px 14px;
+  border-bottom:1px solid rgba(255,255,255,.045);
+  font-size:13px;
+  font-variant-numeric: tabular-nums;
+}
+.gl-row:last-child { border-bottom:none; }
+.gl-row .gl-date { text-transform:uppercase; letter-spacing:.08em; }
+.gl-row .gl-opp { text-align:left; }
+.gl-row .gl-score { text-align:right; font-variant-numeric:tabular-nums; }
+.gl-row .gl-score i { font-style:normal; color:var(--text-3); margin-left:4px; font-size:11px; }
+.gl-row .gl-venue { text-align:right; }
+.gl-list b.ok  { color:var(--cyan); }
+.gl-list b.warn{ color:var(--amber); }
+.gl-list b.bad { color:#ff6b6b; }
+@media (max-width:640px) {
+  .gl-row { grid-template-columns:80px 32px 1fr 70px; }
+  .gl-row .gl-venue { display:none; }
+}
+
 /* ---- season-by-season chart (teams/franchises) ---- */
 .chart-scroll { overflow-x: auto; }
 .hchart { min-width: 560px; }

@@ -642,4 +642,5 @@
   window.HI_News = news;
   window.HI_Favorites = favorites;
   window.HI_Settings = settings;
+  window.HI_Champions = champions;
 })();

@@ -47,6 +47,12 @@ async def _seed(session):
                 loser_team_id=1, loser_name="Hockey Club",
                 winner_games=4, loser_games=3,
             ),
+            PlayoffSeries(
+                season_id=20222023, round_number=1, round_label="1st Round",
+                conference="Eastern", winner_team_id=1, winner_name="Hockey Club",
+                loser_team_id=5, loser_name="Fifth",
+                winner_games=4, loser_games=1,
+            ),
         ]
     )
     await session.flush()
@@ -60,6 +66,7 @@ async def test_history_builds_ascending_rows_with_markers(session):
     assert seasons[-1]["stanley_cup"] is True
     assert seasons[-1]["cup_finalist"] is True
     assert seasons[0]["stanley_cup"] is False
+    assert seasons[0]["conference_final"] is False  # round 1 participant, not a finalist
     assert seasons[1]["conference_final"] is True
     assert seasons[2]["conference_final"] is True
 

@@ -325,23 +325,23 @@
   }
 
   const ROUTES = {
-    home: HI_Home,
-    live: HI_Live,
-    schedule: HI_Schedule,
-    standings: HI_Standings,
-    playoffs: HI_Playoffs,
-    players: HI_Players,
-    teams: HI_Teams,
-    franchises: HI_Franchises,
-    history: HI_History,
-    champions: HI_Champions,
-    compare: HI_Compare,
-    fantasy: HI_Fantasy,
-    ai: HI_AI,
-    news: HI_News,
-    events: HI_Events,
-    favorites: HI_Favorites,
-    settings: HI_Settings,
+    home: "HI_Home",
+    live: "HI_Live",
+    schedule: "HI_Schedule",
+    standings: "HI_Standings",
+    playoffs: "HI_Playoffs",
+    players: "HI_Players",
+    teams: "HI_Teams",
+    franchises: "HI_Franchises",
+    history: "HI_History",
+    champions: "HI_Champions",
+    compare: "HI_Compare",
+    fantasy: "HI_Fantasy",
+    ai: "HI_AI",
+    news: "HI_News",
+    events: "HI_Events",
+    favorites: "HI_Favorites",
+    settings: "HI_Settings",
   };
 
   function route() {
@@ -358,7 +358,7 @@
       if (k) query[decodeURIComponent(k)] = decodeURIComponent(v);
     });
     const key = parts[0] || "home";
-    const handler = ROUTES[key] || (() => "<div class='error-block'>Unknown destination.</div>");
+    const handler = window[ROUTES[key]] || (() => "<div class='error-block'>Unknown destination.</div>");
     const view = $("#view");
     view.innerHTML = '<div class="loading-block"><div class="spinner"></div>Loading…</div>';
     Promise.resolve()

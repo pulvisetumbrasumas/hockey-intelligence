@@ -68,12 +68,35 @@ alembic upgrade head
 # Seed the database (10 seasons: 2015-16 through 2024-25, incl. playoffs + bios)
 PYTHONPATH=. python scripts/seed.py
 
+# Seed per-game results (10 seed seasons) + playoff rounds 1-2 (1993-94 → today)
+PYTHONPATH=. python scripts/seed_games.py
+
 # Run the API
 PYTHONPATH=. python -m uvicorn app.main:app --port 8000
 # or: PYTHONPATH=. python scripts/run.py
 ```
 
 Interactive docs: http://localhost:8000/docs
+
+### Desktop (Tauri)
+
+A tiny Tauri 2 shell (`src-tauri/`) wraps the same frontend — the webview loads the
+FastAPI app on `http://127.0.0.1:8000` and the shell spawns the Python server
+(`python3 -m uvicorn app.main:app`) when the app starts, killing it on exit. No
+Node/npm is involved on this path (the plain `cargo` build embeds the static app and
+an icon is committed under `src-tauri/icons/`). Requirements: Rust (cargo) + the
+webkit2gtk-4.1 dev libraries (same stack the web app needs).
+
+```bash
+# With the API already running (or not — the shell boots it for you)
+cd src-tauri && cargo run        # dev shell
+# Optional overrides (env) — HI_PYTHON (python binary), HI_PROJECT_DIR (repo root)
+```
+
+If a server is already listening on `127.0.0.1:8000` the shell just connects to it.
+Distributable installers (`.deb/.rpm/.AppImage`) are not configured yet — set
+`bundle.active = true` in `src-tauri/tauri.conf.json` and supply a proper icon set,
+then `cargo tauri build` (needs the `tauri-cli`).
 
 ### Try it
 

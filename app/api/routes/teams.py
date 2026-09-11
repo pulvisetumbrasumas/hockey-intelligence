@@ -1,14 +1,26 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database.connection import get_db
-from app.models import Champion, Franchise, Season, Team, TeamIdentity
+from app.models import Champion, Franchise, Game, Season, Team, TeamIdentity
 from app.schemas.common import TeamOut
 from app.services.history import build_team_season_history
 from app.services.images import team_logo_url
+from app.services.streaks import compute_team_streaks, team_game_views
 
 router = APIRouter(prefix="/api", tags=["teams"])
+
+
+def _team_lite(team: Team | None) -> dict | None:
+    if not team:
+        return None
+    return {
+        "team_id": team.id,
+        "name": team.full_name,
+        "abbreviation": team.abbreviation,
+        "logo": team_logo_url(team.abbreviation),
+    }
 
 
 def _championships_rows(champion: Champion, season_label: str, ids: set[int]) -> dict | None:
@@ -108,6 +120,153 @@ async def team_season_history(team_id: int, db: AsyncSession = Depends(get_db)):
     history["abbreviation"] = team.abbreviation
     history["logo"] = team_logo_url(team.abbreviation)
     return history
+
+
+async def _covered_seasons(
+    db: AsyncSession, team_id: int
+) -> list[dict]:
+    """Seasons that have at least one stored game for the team, newest first."""
+    rows = (
+        await db.execute(
+            select(Game.season_id, Season.formatted_id, func.count(Game.id))
+            .join(Season, Season.id == Game.season_id)
+            .where(or_(Game.home_team_id == team_id, Game.away_team_id == team_id))
+            .group_by(Game.season_id, Season.formatted_id)
+            .order_by(Game.season_id.desc())
+        )
+    ).all()
+    return [
+        {"season_id": sid, "season_label": label, "games": count}
+        for sid, label, count in rows
+    ]
+
+
+def _game_row(
+    game: Game,
+    season_label: str,
+    team_id: int,
+    team_by_id: dict[int, Team],
+) -> dict:
+    is_home = game.home_team_id == team_id
+    opponent_id = game.away_team_id if is_home else game.home_team_id
+    opponent = team_by_id.get(opponent_id) if opponent_id is not None else None
+    team_score = getattr(game, "home_score" if is_home else "away_score")
+    opponent_score = getattr(game, "away_score" if is_home else "home_score")
+    if team_score is None or opponent_score is None:
+        result = None
+    elif team_score > opponent_score:
+        result = "W"
+    else:
+        result = "OTL" if game.ot_sol else "L"
+    return {
+        "game_id": game.id,
+        "season_id": game.season_id,
+        "season_label": season_label,
+        "game_date": game.game_date.isoformat() if game.game_date else None,
+        "game_type": game.game_type,
+        "is_home": is_home,
+        "opponent": _team_lite(opponent),
+        "team_score": team_score,
+        "opponent_score": opponent_score,
+        "result": result,
+        "ot": game.ot_sol,
+        "venue": game.venue,
+    }
+
+
+@router.get("/teams/{team_id}/games")
+async def team_games(
+    team_id: int,
+    season_id: int | None = Query(None),
+    limit: int = Query(20, ge=1, le=120),
+    db: AsyncSession = Depends(get_db),
+):
+    """Game log and game-level streaks for one club.
+
+    Without a ``season_id`` the most recent season with stored games is used.
+    Streaks are computed over regular-season games only (game_type 2).
+    """
+    team = await db.get(Team, team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail=f"Team {team_id} not found.")
+
+    coverage = await _covered_seasons(db, team_id)
+    if not coverage:
+        return {
+            "team_id": team.id,
+            "team_name": team.full_name,
+            "abbreviation": team.abbreviation,
+            "logo": team_logo_url(team.abbreviation),
+            "coverage": [],
+            "season_id": None,
+            "games": [],
+            "streaks": None,
+        }
+    effective = season_id or coverage[0]["season_id"]
+
+    season_map = {c["season_id"]: c["season_label"] for c in coverage}
+    rows = (
+        await db.execute(
+            select(Game, Season.formatted_id)
+            .join(Season, Season.id == Game.season_id)
+            .where(
+                or_(Game.home_team_id == team_id, Game.away_team_id == team_id),
+                Game.season_id == effective,
+            )
+            .order_by(Game.game_date.asc(), Game.id.asc())
+        )
+    ).all()
+    recent_rows = rows[-limit:] if limit else rows
+
+    opponent_ids = {
+        (g.away_team_id if g.home_team_id == team_id else g.home_team_id)
+        for g, _ in recent_rows
+        if g.home_team_id is not None and g.away_team_id is not None
+    }
+    team_by_id: dict[int, Team] = {}
+    if opponent_ids:
+        team_q = await db.execute(select(Team).where(Team.id.in_(opponent_ids)))
+        team_by_id = {t.id: t for t in team_q.scalars()}
+
+    recent = [
+        _game_row(g, label or str(g.season_id), team_id, team_by_id)
+        for g, label in recent_rows
+    ]
+
+    streak_dicts = []
+    for g, _ in rows:
+        if g.game_type != 2:
+            continue
+        streak_dicts.append(
+            {
+                "game_id": g.id,
+                "game_date": g.game_date,
+                "season_id": g.season_id,
+                "game_type": g.game_type,
+                "home_team_id": g.home_team_id,
+                "away_team_id": g.away_team_id,
+                "home_score": g.home_score,
+                "away_score": g.away_score,
+                "ot_sol": g.ot_sol,
+            }
+        )
+    streaks = (
+        compute_team_streaks(team_game_views(streak_dicts, team_id))
+        if streak_dicts
+        else None
+    )
+
+    return {
+        "team_id": team.id,
+        "team_name": team.full_name,
+        "abbreviation": team.abbreviation,
+        "logo": team_logo_url(team.abbreviation),
+        "coverage": coverage,
+        "season_id": effective,
+        "season_label": season_map.get(effective),
+        "games": recent,
+        "streaks": streaks,
+    }
 
 
 @router.get("/franchises/{franchise_id}/seasons")

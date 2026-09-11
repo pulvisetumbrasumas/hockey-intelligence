@@ -12,15 +12,18 @@ from app.models import (
     DataImport,
     DataSource,
     Franchise,
+    Game,
     GoalieSeasonStats,
     Player,
     PlayerSeasonStats,
+    PlayoffSeries,
     Season,
     Team,
     TeamIdentity,
     TeamSeasonStats,
 )
 from app.providers.nhl_provider import NHLDataProvider
+from app.services.playoffs import reconstruct_early_rounds
 
 logger = logging.getLogger(__name__)
 
@@ -234,6 +237,124 @@ class DataSeeder:
             session, "playoff_stats", counts["playoff_skaters"], url="skater/summary"
         )
         return counts
+
+    async def import_games(self, session: AsyncSession, seasons: list[int]) -> dict:
+        """Store every finalized regular-season and playoff game for a season.
+
+        Uses the NHL game id as the primary key (it is globally unique and
+        numerically fits), so re-runs are cheap and never duplicate rows.
+        """
+        count = upserted = 0
+        for season_id in seasons:
+            season = await session.get(Season, season_id)
+            if season is None:
+                continue
+            existing_ids = set(
+                (
+                    await session.execute(
+                        select(Game.id).where(Game.season_id == season_id)
+                    )
+                ).scalars()
+            )
+            for g in await self.provider.get_games(season_id):
+                gid = g.get("id")
+                if not gid or gid in existing_ids:
+                    continue
+                home = g.get("homeTeam") or {}
+                away = g.get("awayTeam") or {}
+                venue = g.get("venue")
+                if isinstance(venue, dict):
+                    venue = venue.get("default")
+                period = g.get("periodDescriptor") or {}
+                ot_sol = None
+                if period.get("periodType") == "OT":
+                    ot_sol = "OT"
+                elif period.get("periodType") == "SO":
+                    ot_sol = "SO"
+                session.add(
+                    Game(
+                        id=gid,
+                        season_id=g.get("season") or season_id,
+                        game_type=g.get("gameType"),
+                        game_date=self._parse_iso(g.get("startTimeUTC")),
+                        home_team_id=home.get("id"),
+                        away_team_id=away.get("id"),
+                        home_team_code=(home.get("abbrev") or "")[:10],
+                        away_team_code=(away.get("abbrev") or "")[:10],
+                        home_score=home.get("score"),
+                        away_score=away.get("score"),
+                        venue=venue,
+                        ot_sol=ot_sol,
+                        attendance=g.get("attendance"),
+                        status="final",
+                    )
+                )
+                existing_ids.add(gid)
+                count += 1
+                if count % 500 == 0:
+                    await session.flush()
+            upserted += 1
+        await session.flush()
+        await self._record_import(session, "games", count, url="schedule")
+        return {"games": count, "seasons": upserted}
+
+    async def import_playoff_series(
+        self, session: AsyncSession, seasons: list[int]
+    ) -> dict:
+        """Reconstruct first- and second-round series for the 16-team era.
+
+        Round 1-2 entries are fully derived from finalized playoff games, so a
+        previous set for a season is replaced deterministically rather than
+        duplicated. Conference finals (round 3) and the Cup Final (champions)
+        are authoritative and are never touched here.
+        """
+        series_seasons = [s for s in seasons if s >= 19931994]
+        if not series_seasons:
+            return {"playoff_series": 0, "seasons": 0}
+        team_rows = (await session.execute(select(Team))).scalars().all()
+        team_names = {t.id: (t.full_name or t.abbreviation) for t in team_rows}
+        count = restored = 0
+        for season_id in series_seasons:
+            series_list = reconstruct_early_rounds(
+                await self.provider.get_playoff_games(season_id)
+            )
+            if not series_list:
+                continue
+            rows = (
+                await session.execute(
+                    select(PlayoffSeries.id).where(
+                        PlayoffSeries.season_id == season_id,
+                        PlayoffSeries.round_number < 3,
+                    )
+                )
+            ).scalars().all()
+            for pid in rows:
+                await session.delete(await session.get(PlayoffSeries, pid))
+            for s in series_list:
+                session.add(
+                    PlayoffSeries(
+                        season_id=s["season_id"],
+                        round_number=s["round_number"],
+                        round_label=s["round_label"],
+                        conference=s["conference"],
+                        winner_team_id=s["winner_team_id"],
+                        winner_name=team_names.get(
+                            s["winner_team_id"], s.get("winner_abbrev")
+                        ),
+                        loser_team_id=s["loser_team_id"],
+                        loser_name=team_names.get(
+                            s["loser_team_id"], s.get("loser_abbrev")
+                        ),
+                        winner_games=s["winner_games"],
+                        loser_games=s["loser_games"],
+                        note=None,
+                    )
+                )
+                count += 1
+            restored += 1
+        await session.flush()
+        await self._record_import(session, "playoff_series", count, url="schedule")
+        return {"playoff_series": count, "seasons": restored}
 
     async def _upsert_skater(
         self, session: AsyncSession, s: dict, season_id: int, game_type: int = 2

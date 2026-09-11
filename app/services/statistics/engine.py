@@ -1,4 +1,4 @@
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.player import Player
@@ -518,7 +518,7 @@ class StatisticsEngine:
 
         Entertainment, for fun — never a claim about who is objectively best.
         Fantasy points are computed deterministically from the same career
-        totals the leaderboards use.
+        aggregates the leaderboards use.
         """
         stat_type = stat_type.lower()
         if preset not in FANTASY_PRESETS:
@@ -530,69 +530,54 @@ class StatisticsEngine:
 
         model = PlayerSeasonStats if stat_type == "skater" else GoalieSeasonStats
         weights = meta["weights"] if stat_type == "skater" else meta["goalie_weights"]
-        fields: list[str] = list(weights) if stat_type == "skater" else ["wins", "shutouts"]
 
-        sums: dict[int, dict[str, float]] = {}
-        games: dict[int, float] = {}
-        recent_team: dict[int, str | None] = {}
-        save_sums: dict[int, list[float]] = {}
+        if stat_type == "skater":
+            weight_cols = [
+                (k, SKATER_METRICS[k], w)
+                for k, w in weights.items()
+                if k in SKATER_METRICS
+            ]
+            agg_cols = ["games_played"] + [c for _, c, _ in weight_cols]
+        else:
+            weight_cols = [
+                ("wins", "wins", weights.get("wins", 0.0)),
+                ("shutouts", "shutouts", weights.get("shutouts", 0.0)),
+            ]
+            agg_cols = ["games_played", "wins", "shutouts", "saves", "shots_against"]
 
-        rows = (
-            await self.session.execute(
-                select(model).where(model.game_type == game_type)
-            )
-        ).scalars().all()
-
-        for row in rows:
-            pid = row.player_id
-            if pid is None:
-                continue
-            bucket = sums.setdefault(pid, {f: 0.0 for f in fields})
-            games[pid] = games.get(pid, 0.0) + (row.games_played or 0)
-            if stat_type == "goalie":
-                bb = save_sums.setdefault(pid, [0.0, 0.0])
-                bb[0] += row.saves or 0
-                bb[1] += row.shots_against or 0
-            for f in fields:
-                v = getattr(row, f, None)
-                if v is not None:
-                    bucket[f] += v
-            if row.team_abbrevs:
-                recent_team[pid] = row.team_abbrevs
+        sums = await self._career_sums(model, game_type, agg_cols)
+        recent_team = await self._recent_team_by_player(model, game_type)
 
         player_ids = list(sums)
-        player_map: dict[int, Player] = {}
-        if player_ids:
-            players = (
-                await self.session.execute(
-                    select(Player).where(Player.id.in_(player_ids))
-                )
-            ).scalars().all()
-            player_map = {p.id: p for p in players}
+        player_map = await self._player_cards(player_ids)
 
         pickable = []
         for pid, bucket in sums.items():
-            fp = sum(bucket[f] * weights[f] for f in fields)
-            save_pct = None
-            if stat_type == "goalie":
-                made, faced = save_sums[pid]
+            if stat_type == "skater":
+                fp = sum(bucket[c] * w for _, c, w in weight_cols)
+            else:
+                fp = sum(bucket[c] * w for _, c, w in weight_cols)
+                made = bucket.get("saves") or 0
+                faced = bucket.get("shots_against") or 0
                 if faced:
-                    save_pct = made / faced
-                    fp += (save_pct - 0.900) * weights.get("save_pct_bonus", 0.0)
-            gp = games.get(pid, 0)
+                    fp += ((made / faced) - 0.900) * weights.get("save_pct_bonus", 0.0)
+            gp = bucket.get("games_played") or 0
             metrics = {
-                k: (round(v, 4) if isinstance(v, float) else v)
-                for k, v in bucket.items()
+                k: (round(bucket[c], 4) if isinstance(bucket[c], float) else bucket[c])
+                for k, c, _ in weight_cols
             }
-            if save_pct is not None:
-                metrics["save_pct"] = round(save_pct, 4)
+            if stat_type == "goalie":
+                made = bucket.get("saves") or 0
+                faced = bucket.get("shots_against") or 0
+                if faced:
+                    metrics["save_pct"] = round(made / faced, 4)
             player = player_map.get(pid)
             pickable.append(
                 {
                     "player_id": pid,
-                    "name": player.full_name if player else str(pid),
+                    "name": player["full_name"] if player else str(pid),
                     "team": recent_team.get(pid),
-                    "position": player.position_code if player else None,
+                    "position": player["position_code"] if player else None,
                     "games_played": int(gp),
                     "fp": round(fp, 1),
                     "fp_per_game": round(fp / gp, 2) if gp else None,
@@ -610,6 +595,51 @@ class StatisticsEngine:
             "preset_label": meta["label"],
             "preset_tagline": meta["tagline"],
             "results": pickable[:limit],
+        }
+
+    async def _player_cards(self, player_ids: list[int]) -> dict[int, dict]:
+        """id -> {full_name, position_code} without full ORM hydration."""
+        if not player_ids:
+            return {}
+        rows = (
+            await self.session.execute(
+                select(Player.id, Player.full_name, Player.position_code).where(
+                    Player.id.in_(player_ids)
+                )
+            )
+        ).all()
+        return {i: {"full_name": n, "position_code": p} for i, n, p in rows}
+
+    async def _career_sums(self, model, game_type: int, columns: list[str]):
+        """Per-player career totals via a single SQL GROUP BY (no row hydration)."""
+        exprs = [
+            func.coalesce(func.sum(getattr(model, c)), 0).label(c) for c in columns
+        ]
+        stmt = (
+            select(model.player_id, *exprs)
+            .where(model.game_type == game_type, model.player_id.is_not(None))
+            .group_by(model.player_id)
+        )
+        rows = (await self.session.execute(stmt)).all()
+        return {r[0]: {c: r[i + 1] for i, c in enumerate(columns)} for r in rows}
+
+    async def _recent_team_by_player(self, model, game_type: int) -> dict[int, str]:
+        """Most recent season's team abbreviation per player (windowed, one row each)."""
+        rn = func.row_number().over(
+            partition_by=model.player_id, order_by=model.season_id.desc()
+        ).label("rn")
+        sub = (
+            select(model.player_id.label("player_id"), model.team_abbrevs, rn)
+            .where(model.game_type == game_type)
+            .subquery()
+        )
+        rows = (
+            await self.session.execute(
+                select(sub.c.player_id, sub.c.team_abbrevs).where(sub.c.rn == 1)
+            )
+        ).all()
+        return {
+            pid: ab for pid, ab in rows if pid is not None and ab
         }
 
     async def _season_leaderboard(
@@ -663,59 +693,36 @@ class StatisticsEngine:
     async def _career_leaderboard(
         self, model, game_type, stat_type, metric, column, limit, min_games
     ) -> list[dict]:
-        rows = (
-            await self.session.execute(
-                select(model).where(model.game_type == game_type)
-            )
-        ).scalars().all()
-
         rate_sources = _RATE_METRICS.get((stat_type, metric))
         if min_games is None and rate_sources:
             min_games = _MIN_GAMES_IF_RATE
 
-        # bucket = [value-or-rate-numerator, rate denominator, games played]
-        buckets: dict[int, list[float]] = {}
-        recent_team: dict[int, str | None] = {}
-        for row in rows:
-            player_id = row.player_id
-            bucket = buckets.setdefault(player_id, [0.0, 0.0, 0.0])
-            bucket[2] += row.games_played or 0
-            if rate_sources:
-                num, den, scale = rate_sources
-                n = getattr(row, num)
-                d = getattr(row, den)
-                if n is None or d is None:
-                    continue
-                bucket[0] += n
-                bucket[1] += d
-            else:
-                value = getattr(row, column)
-                if value is None:
-                    continue
-                bucket[0] += value
-            if row.team_abbrevs:
-                recent_team[player_id] = row.team_abbrevs
+        agg_cols = ["games_played"]
+        if rate_sources:
+            num, den, _ = rate_sources
+            agg_cols += [num, den]
+        else:
+            agg_cols.append(column)
+
+        sums = await self._career_sums(model, game_type, agg_cols)
+        recent_team = await self._recent_team_by_player(model, game_type)
 
         qualified = []
-        for player_id, (num, den, games) in buckets.items():
+        for player_id, vals in sums.items():
+            games = vals["games_played"] or 0
             if min_games is not None and games < min_games:
                 continue
             if rate_sources:
-                _, _, scale = rate_sources
-                value = num * scale / den if den else None
+                num, den, scale = rate_sources
+                value = vals[num] * scale / vals[den] if vals[den] else None
             else:
-                value = num
+                value = vals[column]
+            if value is None:
+                continue
             qualified.append((player_id, value))
 
         player_ids = [pid for pid, _ in qualified]
-        player_map: dict[int, Player] = {}
-        if player_ids:
-            players = (
-                await self.session.execute(
-                    select(Player).where(Player.id.in_(player_ids))
-                )
-            ).scalars().all()
-            player_map = {p.id: p for p in players}
+        player_map = await self._player_cards(player_ids)
 
         qualified.sort(key=lambda t: t[1], reverse=True)
 
@@ -726,9 +733,9 @@ class StatisticsEngine:
                 {
                     "rank": idx,
                     "player_id": player_id,
-                    "name": player.full_name if player else str(player_id),
+                    "name": player["full_name"] if player else str(player_id),
                     "team": recent_team.get(player_id),
-                    "position": player.position_code if player else None,
+                    "position": player["position_code"] if player else None,
                     "value": round(value, 4) if isinstance(value, float) else value,
                 }
             )

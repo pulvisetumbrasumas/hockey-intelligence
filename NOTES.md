@@ -271,7 +271,7 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 - `/api/playoffs/series` (`?season_id=`) returns rounds 3 (conference finals) and
   4 (Stanley Cup Final, merged from `champions`) per season, with full team digests.
 - UI: `#/playoffs` page — season selector, bracket-style cards per round with
-  winner highlighted; note that rounds 1-2 are not yet restored.
+  winner highlighted. (Rounds 1-2 restored in Slice 10; see below.)
 - Fixed the previously-wrong 2024-25 champions row in the live DB + migration seed
   (was "FLA def. CAR 4-1" → corrected to "FLA def. EDM 4-2", runner_team_id 12→22).
 
@@ -294,6 +294,79 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
   Carolina (45 seasons, cup 2005-06, drought 19), Canadiens (107 seasons),
   Winnipeg/Thrashers (25, one conference final).
 
+## Slice 10 — per-game results + playoff rounds 1-2 (verified)
+
+- `games` table (was empty) now stores every finalized regular-season + playoff
+  game for the configured seed seasons. `NHLDataProvider._walk_schedule` walks the
+  web API `schedule/{date}` endpoint week by week via `nextStartDate`; `get_games`
+  and `get_playoff_games` filter by the game's own `season` field so adjacent
+  playoff runs / lockout-delayed seasons can never leak across. `Game.id` = the
+  NHL game id (int32), so reseeding is an idempotent upsert.
+- Seeded ~11,583 games for 2015-16 → 2024-25 (COVID seasons ~1,000, others
+  ~1,300-1,400, incl. playoffs). Spot counts verified: NJD 2024-25 = 87 (82 reg +
+  5 first-round games), 2020-21 = 56.
+- `reconstruct_early_rounds()` (`app/services/playoffs.py`) rebuilds 1st/2nd-round
+  series from finalized playoff games: winner/loser ids + game counts straight
+  from the scoreboard, conference from the series letter (A-D East, E-H West in
+  R1; I/J East, K/L West in R2). Ranking comes from the series' team list, not
+  the win tally, so 4-0 sweeps still record the losing team.
+- `import_playoff_series()` replaces rounds 1-2 per season for all 16-team-era
+  seasons (1993-94 → 2025-26); round 3 conference finals + `champions` (round 4)
+  stay authoritative. Seeded 372 first/second-round series (31×12; the 2004-05
+  lockout year has none). Checked against reality: 1993-94, 2010-11 (TBL def PIT
+  4-3, BOS def MTL 4-3, VAN def NSH 4-2 …) and 2024-25 (CAR def NJD, FLA def TBL,
+  WSH def MTL …) all match.
+- API: `GET /api/teams/{team_id}/games?season_id=&limit=` → latest covered season
+  by default, coverage list, game log (ascending, from the requesting club's
+  perspective) and a game-streak summary computed over regular-season rows only.
+- Game-streak engine (`app/services/streaks.py`, pure + unit-tested): a losing
+  streak counts OT/SO losses, a point streak counts wins + OT/SO losses, `last_10`
+  is the last ten games; wins/ot_losses/losses tallies + longest runs. Example
+  live check: NJD 2024-25 → 42-7-33, longest win streak 3.
+- UI: `#/playoffs` renders all four rounds (First round → Conference finals →
+  Final) with a season selector; team pages gain a "Recent games" section with
+  streak chips + a compact game log and per-season dropdown. LSP noise remains
+  in `teams.py` (~339: `team.full_name` `str|None` vs `TeamOut.full_name: str`) —
+  cosmetic, not runtime (noted in Remaining).
+
+## Slice 11 — blank-dashboard fix, page fixes, perf
+
+- **Blank dashboard root cause** (`app/static/js/app.js`): the router `ROUTES`
+  map referenced page handlers (`home: HI_Home`, `ai: HI_AI`, …) as bare globals
+  at module-eval time, but `app.js` loads first (index.html) before any page
+  module defines them → `ReferenceError`, the whole IIFE died, `window.HI` was
+  never set and every page module died too. Fixed with a lazy `window["HI_…"]`
+  lookup inside `route()`. This is why "nothing was showing".
+- **Missing page exports**: `champions` was fully implemented in `misc.js` but
+  never exported (`window.HI_Champions` absent) → the page showed "Unknown
+  destination". Added the export. Also verified `HI_AI` etc. all exist now.
+- **Perf — career leaders + fantasy pool** (`app/services/statistics/engine.py`):
+  both `_career_leaderboard` and `get_fantasy_pool` hydrated every
+  `player_season_stats` row into ORM objects (66k rows) and summed in Python —
+  fantasy pool was ~64s. Now aggregated in SQL via `GROUP BY`
+  (`_career_sums`), recent team via a windowed subquery (`_recent_team_by_player`,
+  one row per player), and player names/positions via a 3-column select
+  (`_player_cards`) instead of full ORM hydration. 6 concurrent career-leader
+  calls: 19s → ~2s; fantasy pool skater: 64s → ~0.7s. Latent bug fixed on the
+  way: power-play/shorthanded goal columns were never counted in fantasy scoring
+  (`getattr(row, "power_play_goals")` isn't a column; now mapped via
+  `SKATER_METRICS`).
+- **DB hardening** (`app/database/connection.py`): pool bumped to
+  `pool_size=10, max_overflow=25`; SQLite now runs in **WAL** mode with
+  `synchronous=NORMAL` (configured in the existing connect event) so concurrent
+  reads don't serialize on the rollback journal.
+- `GET /api/champions` and `/api/stats/leaders/career` were verified fast in
+  isolation; the earlier 500 was pool starvation under a request storm, not the
+  query.
+- All 17 routes render in a jsdom harness against the live server.
+- **Desktop shell (Tauri 2)**: `src-tauri/` wraps the frontend — the webview loads
+  `http://127.0.0.1:8000`, the shell spawns `python3 -m uvicorn app.main:app` from the
+  repo root (env overrides `HI_PYTHON`, `HI_PROJECT_DIR`), polls TCP until ready, then
+  `window.location.replace`s the window there, and kills the child on exit. `cargo run`
+  from `src-tauri/` works with no Node involvement (tauri-build embeds `app/static`).
+  Dev-only for now: `bundle.active` is false and `icons/` holds a placeholder RGBA PNG,
+  so installable packages need a real icon set + `tauri-cli` before `cargo tauri build`.
+
 ## Remaining / known issues
 
 - LSP noise (not runtime): `pydantic_settings` "could not be resolved" (stale index,
@@ -310,11 +383,11 @@ bios)**, 10 seasons of skater/goalie stats (2015-16 → 2024-25, reg + playoffs)
 
 ## Typical next steps
 
-1. Conference/division splits in standings (`split=league|conference|division`) + teams
-   columns; then per-team season charts / game-event engine.
-2. Speed up the AI loop further: streaming/SSE, per-turn `num_ctx` tuning, or a faster model.
-3. Playoff brackets/series data per season; seed game results for historic seasons.
-   (Conference finals + finals restored in Slice 8; rounds 1-2 and per-game scores pending.)
-4. Team season endpoints + per-team charts; streaks engine.
-   (Season-by-season charts + streaks shipped in Slice 9; per-game streaks pending.)
+1. Game-event engine (style shots, goals, penalties serialized from box scores) and
+   richer game views; expand the per-game window beyond the 10 seed seasons.
+2. Speed up the AI loop further: per-turn `num_ctx` tuning, or a faster model.
+3. Team-streak caching / top-streaks-of-the-era leaderboard surface (game-level
+   streaks already computed per team in Slice 10).
+4. Conference/division splits + per-team season charts are done (Slices 6, 9);
+   next could be season-by-season standings tables in the history UI.
 5. National licensing terms review for NHL API redistribution.
