@@ -30,6 +30,11 @@ class Settings(BaseSettings):
     nhl_draft_date: str = "2027-06-26"
     all_star_date: str = "2027-02-06"
 
+    # Live news / free-agent watch
+    news_feed_base: str = "https://site.api.espn.com/apis/site/v2/sports/hockey/nhl"
+    news_cache_ttl: int = 300
+    roster_cache_ttl: int = 3600
+
     # Data Seeding
     data_seed_seasons: str = "20232024,20242025,20252026"
 

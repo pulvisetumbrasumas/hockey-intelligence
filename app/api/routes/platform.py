@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import time
 from datetime import UTC, date, datetime, timedelta, timezone
 
@@ -10,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import get_settings
 from app.database.connection import get_db
-from app.models import Champion, PlayoffSeries, Season, Team
+from app.models import Champion, PlayoffSeries, Player, PlayerSeasonStats, Season, Team
 from app.models.stats_team import TeamSeasonStats
 from app.services.images import team_logo_url
 from app.services.statistics.engine import FANTASY_PRESETS, StatisticsEngine
@@ -32,9 +33,11 @@ def _store(key: str, value: object) -> object:
     return value
 
 
-async def _web_json(path: str, params: dict | None = None) -> dict:
+async def _web_json(
+    path: str, params: dict | None = None, base: str | None = None
+) -> dict:
     settings = get_settings()
-    url = f"{settings.nhl_web_api_base}/{path}"
+    url = f"{base or settings.nhl_web_api_base}/{path}"
     async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
         resp = await client.get(url, params=params)
         resp.raise_for_status()
@@ -273,6 +276,240 @@ async def schedule(
         "date": day,
         "next_start_date": payload.get("nextStartDate"),
         "games": _normalize_games(payload),
+    }
+
+
+async def _normalize_espn_news(payload: dict) -> list[dict]:
+    """Flatten ESPN NHL news articles into the UI's card shape."""
+    items = []
+    for a in payload.get("articles", []):
+        categories = [c.get("description") or "" for c in a.get("categories", [])]
+        categories = [c for c in categories if c]
+        image = ""
+        for img in a.get("images", []) or []:
+            url = img.get("url")
+            if url and img.get("type") in ("header", "full", None):
+                image = url
+                break
+        link = ""
+        for name in ("web", "desktop", "mobile"):
+            node = a.get("links", {}).get(name)
+            href = node.get("href") if isinstance(node, dict) else None
+            if href and "espn" in href:
+                link = href
+                break
+        items.append(
+            {
+                "id": a.get("id") or a.get("contentKey"),
+                "title": a.get("headline"),
+                "summary": a.get("description"),
+                "byline": a.get("byline"),
+                "published": a.get("published"),
+                "category": categories[0] if categories else "NHL",
+                "tags": categories,
+                "image": image or "",
+                "link": link or "",
+                "premium": bool(a.get("premium")),
+            }
+        )
+    return items
+
+
+@router.get("/news")
+async def news(db: AsyncSession = Depends(get_db)):
+    """League headlines from the public ESPN NHL news feed."""
+    _ = db
+    settings = get_settings()
+    cached = _cached("espn-news", settings.news_cache_ttl)
+    if cached:
+        return cached  # type: ignore[no-any-return]
+    try:
+        payload = await _web_json("news", base=settings.news_feed_base)
+    except HTTPException as exc:
+        raise HTTPException(status_code=502, detail=f"News feed unavailable: {exc.detail}")
+    articles = await _normalize_espn_news(payload)
+    return _store(
+        "espn-news",
+        {
+            "source": "ESPN · NHL",
+            "as_of": datetime.now(UTC).isoformat(),
+            "articles": articles,
+        },
+    )  # type: ignore[return-value]
+
+
+def _current_year_season_pair() -> tuple[int, int]:
+    """(opening_year, season_start_year) for the season beginning now."""
+    year = date.today().year if date.today().month >= 7 else date.today().year - 1
+    return year, year - 1
+
+
+def _roster_season_id() -> int:
+    """NHL season id (e.g. 20262027) for the season starting now."""
+    year, _ = _current_year_season_pair()
+    return year * 10000 + (year + 1)
+
+
+def _stats_season_id() -> int:
+    """Season id of the most recent completed NHL season (e.g. 20252026)."""
+    _, prev = _current_year_season_pair()
+    return prev * 10000 + (prev + 1)
+
+
+async def _fetch_season_rosters(season_id: int, db: AsyncSession) -> dict[int, dict]:
+    """All 32 club rosters for a season, keyed by NHL player id (cached)."""
+    settings = get_settings()
+    key = f"nhl-rosters-{season_id}"
+    cached = _cached(key, settings.roster_cache_ttl)
+    if cached:
+        return cached  # type: ignore[no-any-return]
+
+    rows = (
+        await db.execute(
+            select(Team.abbreviation).where(
+                Team.active == 1, Team.abbreviation != None  # noqa: E711
+            )
+        )
+    ).scalars().all()
+    abbrevs = [a for a in rows if a]
+
+    # The database tags every historical identity as active, so take the 32
+    # current clubs straight from the live standings feed instead.
+    try:
+        standings = await _web_json("standings/now")
+        live = {
+            (x.get("teamAbbrev") or {}).get("default")
+            for x in standings.get("standings", [])
+        }
+        live = {a for a in live if a}
+        if live:
+            abbrevs = sorted(live)
+    except (HTTPException, httpx.HTTPError):
+        pass
+
+    if not abbrevs:
+        raise HTTPException(status_code=503, detail="Team list unavailable.")
+
+    async def _one(abbr: str) -> list[dict]:
+        async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+            resp = await client.get(
+                f"{settings.nhl_web_api_base}/roster/{abbr}/{season_id}"
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        persons = []
+        for group in ("forwards", "defensemen", "goalies"):
+            for p in data.get(group, []):
+                first = p.get("firstName", {}).get("default", "") if isinstance(
+                    p.get("firstName"), dict
+                ) else p.get("firstName", "")
+                last = p.get("lastName", {}).get("default", "") if isinstance(
+                    p.get("lastName"), dict
+                ) else p.get("lastName", "")
+                pid = p.get("id")
+                if pid:
+                    persons.append(
+                        {
+                            "id": int(pid),
+                            "name": f"{first} {last}".strip(),
+                            "position": p.get("positionCode") or "",
+                            "team": abbr,
+                        }
+                    )
+        return persons
+
+    results = await asyncio.gather(*(_one(a) for a in abbrevs), return_exceptions=True)
+    roster: dict[int, dict] = {}
+    for result in results:
+        if isinstance(result, BaseException):
+            continue
+        for p in result:
+            roster[p["id"]] = p
+    if not roster:
+        raise HTTPException(status_code=502, detail="Roster feed unavailable.")
+    return _store(key, roster)  # type: ignore[return-value]
+
+
+@router.get("/free-agents")
+async def free_agents(
+    limit: int = Query(60, ge=1, le=400),
+    db: AsyncSession = Depends(get_db),
+):
+    """Players with 2025-26 NHL stats not on any 2026-27 club roster.
+
+    Derived live: every club's official 2026-27 roster is fetched and unioned,
+    then subtracted from the players who logged NHL games last season. Players
+    left over are unsigned for the coming season — the free-agent watch.
+    """
+    stats_season = _stats_season_id()
+    roster_season = _roster_season_id()
+    roster = await _fetch_season_rosters(roster_season, db)
+
+    rows = (
+        await db.execute(
+            select(
+                PlayerSeasonStats.player_id,
+                PlayerSeasonStats.team_abbrevs,
+                PlayerSeasonStats.games_played,
+                PlayerSeasonStats.goals,
+                PlayerSeasonStats.assists,
+                PlayerSeasonStats.points,
+                PlayerSeasonStats.plus_minus,
+            )
+            .where(
+                PlayerSeasonStats.season_id == stats_season,
+                PlayerSeasonStats.game_type == 2,
+                PlayerSeasonStats.games_played > 0,
+            )
+            .order_by(PlayerSeasonStats.points.desc())
+        )
+    ).all()
+
+    pids = [r[0] for r in rows]
+    players = (
+        (await db.execute(select(Player).where(Player.id.in_(pids)))).scalars().all()
+    )
+    info = {
+        p.id: {"name": p.full_name or p.last_name or str(p.id), "position": p.position_code, "birth": p.birth_date}
+        for p in players
+    }
+
+    def _age(birth) -> int | None:
+        if not birth:
+            return None
+        return max(int((datetime(2026, 9, 1) - birth).days / 365.25), 0)
+
+    free: list[dict] = []
+    for pid, _, gp, g, a, pts, pm in rows:
+        if pid in roster:
+            continue
+        meta = info.get(pid) or {}
+        free.append(
+            {
+                "player_id": pid,
+                "name": meta.get("name") or str(pid),
+                "position": meta.get("position"),
+                "age": _age(meta.get("birth")),
+                "games_played": gp,
+                "goals": g,
+                "assists": a,
+                "points": pts,
+                "plus_minus": pm,
+            }
+        )
+        if len(free) >= limit:
+            break
+
+    return {
+        "as_of": datetime.now(UTC).isoformat(),
+        "stats_season": stats_season,
+        "roster_season": roster_season,
+        "count": len(free),
+        "free_agents": free,
+        "note": (
+            "Players with NHL games last season who are not on any club's "
+            "official roster for this season. Derived live from club rosters."
+        ),
     }
 
 

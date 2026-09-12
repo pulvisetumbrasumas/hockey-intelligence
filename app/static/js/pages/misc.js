@@ -402,22 +402,97 @@
   }
 
   /* ---------------- News ---------------- */
+  function relTime(iso) {
+    if (!iso) return "";
+    const s = Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+    if (s < 60) return "just now";
+    const m = Math.floor(s / 60);
+    if (m < 60) return m + "m ago";
+    const h = Math.floor(m / 60);
+    if (h < 24) return h + "h ago";
+    const d = Math.floor(h / 24);
+    return d < 30 ? d + "d ago" : new Date(iso).toISOString().slice(0, 10);
+  }
+
+  function faRow(f) {
+    const pts = f.points != null ? L(f.points) : "—";
+    return '<a class="row hover" style="text-decoration:none;align-items:center;gap:12px;" href="#/players/' + f.player_id + '">' +
+      '<div style="width:42px;height:42px;border-radius:12px;background:linear-gradient(115deg,rgba(245,195,107,.18),rgba(255,77,94,.10));border:1px solid var(--line);display:grid;place-items:center;font-weight:800;color:var(--gold);font-size:15px;">' +
+      HI_(window.HI.initials(f.name)) + "</div>" +
+      '<div class="grow" style="min-width:0;">' +
+      '<div style="font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">' + HI_(f.name) + "</div>" +
+      '<div class="muted" style="font-size:12px;">' + HI_((f.position || "—") + " · age " + (f.age != null ? f.age : "—")) + "</div></div>" +
+      '<div style="display:flex;gap:16px;font-size:13px;color:var(--text-2);flex:none;">' +
+      '<span><b class="num">' + L(f.games_played) + "</b> GP</span>" +
+      '<span><b class="num">' + pts + "</b> PTS</span>" +
+      '<span class="num">' + (f.plus_minus != null && f.plus_minus > 0 ? "+" : "") + L(f.plus_minus) + "</span>" +
+      "</div></a>";
+  }
+
+  function articleCard(a) {
+    const img = a.image
+      ? '<div class="thumb" style="height:150px;background:linear-gradient(135deg,rgba(53,215,255,.10),rgba(122,162,255,.06));"><img alt="" loading="lazy" src="' + HI_(a.image) + '" style="width:100%;height:100%;object-fit:cover;"></div>'
+      : '<div class="thumb" style="height:150px;background:linear-gradient(135deg,rgba(53,215,255,.10),rgba(122,162,255,.06));display:grid;place-items:center;color:var(--cyan);font-size:28px;">🏒</div>';
+    return (
+      '<article class="card" style="overflow:hidden;">' +
+      img + '<div style="padding:16px;">' +
+      '<div class="row wrap" style="gap:8px;margin-bottom:8px;">' +
+      '<span class="pill-tag cyan">' + HI_(a.category || "NHL") + "</span>" +
+      '<span class="muted" style="font-size:12px;margin-left:auto;">' + HI_(relTime(a.published)) + "</span></div>" +
+      '<h3 style="margin:0 0 6px;font-size:16.5px;line-height:1.35;">' + HI_(a.title) + "</h3>" +
+      '<p class="muted" style="font-size:13px;margin:0 0 12px;">' + HI_(a.summary || "") + "</p>" +
+      '<div class="row wrap" style="justify-content:space-between;align-items:center;">' +
+      '<span class="muted" style="font-size:12px;">' + HI_(a.byline || "") + "</span>" +
+      (a.link ? '<a class="btn sm ghost" href="' + HI_(a.link) + '" target="_blank" rel="noopener noreferrer">Read story →</a>' : "") +
+      "</div></div></article>"
+    );
+  }
+
   async function news(ctx) {
-    return {
-      html:
-        '<h1 class="page-title">News & Articles</h1>' +
-        '<p class="page-sub">An original newsroom is planned — clean article cards, bookmarks, and writing by the local analyst. The feed source lands in a later slice.</p>' +
-        '<div class="section" style="margin-top:26px;">' +
-        '<div class="grid" style="grid-template-columns:repeat(3,1fr);">' +
-        [0, 1, 2].map((i) =>
-          '<div class="card" style="min-height:220px;display:flex;flex-direction:column;justify-content:space-between;">' +
-          '<div><span class="eyebrow red">Editorial desk</span>' +
-          '<h3 style="margin-top:10px;">' + (["The season ahead", "History repeats", "How leaders are really made"][i]) + "</h3>" +
-          '<p class="muted" style="font-size:13px;">' + (["A data-driven look at what the countdown means.", "How franchise lineage survives relocation.", "Evidence, not vibes, behind the numbers."][i]) + "</p></div>" +
-          '<span class="pill-tag">scheduled · later slice</span></div>'
-        ).join("") +
-        "</div></div>",
-    };
+    try {
+      const [newsData, fa] = await Promise.all([
+        window.HI.api("/api/news"),
+        window.HI.api("/api/free-agents"),
+      ]);
+      const articles = (newsData.articles || []).slice(0, 14);
+
+      const html =
+        '<h1 class="page-title">News & Free-Agent Watch</h1>' +
+        '<p class="page-sub">Big headlines from the NHL news feed — plus the unsigned list derived live from every club’s official roster. The feed is fetched in real time; the watch is subtractive, so it can’t invent names.</p>' +
+        '<div class="row wrap" style="gap:10px;margin-bottom:20px;">' +
+        '<span class="pill-tag cyan">' + HI_(newsData.source || "Live") + "</span>" +
+        '<span class="pill-tag gold">' + L(fa.count) + " unsigned · " + HI_(String(fa.stats_season).slice(0, 4)) + "–" + HI_(String(fa.stats_season).slice(4, 6)) + " NHL skaters</span>" +
+        '<span class="pill-tag">checked vs ' + HI_(String(fa.roster_season).slice(0, 4)) + "–" + HI_(String(fa.roster_season).slice(4, 6)) + " rosters</span>" +
+        "</div>" +
+
+        '<div class="section">' +
+        '<div class="head"><div><span class="eyebrow red">Unsigned watch</span>' +
+        '<h2>Free agents</h2></div></div>' +
+        '<div class="stack">' +
+        (fa.free_agents && fa.free_agents.length
+          ? fa.free_agents.slice(0, 30).map(faRow).join("")
+          : '<div class="empty"><h4>No unsigned players detected</h4></div>') +
+        "</div></div>" +
+
+        '<div class="section">' +
+        '<div class="head"><div><span class="eyebrow">Around the league</span>' +
+        '<h2>Headlines</h2></div></div>' +
+        '<div class="grid" style="grid-template-columns:repeat(auto-fill,minmax(320px,1fr));">' +
+        articles.map(articleCard).join("") +
+        "</div></div>";
+
+      return {
+        html,
+        bind(view) {
+          view.addEventListener("click", (e) => {
+            const lnk = e.target.closest("a[href^='#/players/']");
+            if (lnk) window.HI.mount(lnk.getAttribute("href"));
+          });
+        },
+      };
+    } catch (err) {
+      return "<div class='error-block'>" + HI_(err && err.message) + "</div>";
+    }
   }
 
   /* ---------------- Favorites ---------------- */
