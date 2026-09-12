@@ -1,6 +1,9 @@
 """Unit tests for the live news feed normalizer."""
 
-from app.api.routes.platform import _normalize_espn_news
+from app.api.routes.platform import (
+    _normalize_espn_news,
+    _partition_retired,
+)
 
 
 async def test_normalize_espn_news_flattens_articles():
@@ -67,3 +70,17 @@ async def test_normalize_espn_news_flattens_articles():
 async def test_normalize_espn_news_empty():
     assert await _normalize_espn_news({"articles": []}) == []
     assert await _normalize_espn_news({}) == []
+
+
+def test_partition_retired_splits_candidates():
+    free = [{"player_id": 1}, {"player_id": 2}, {"player_id": 3}, {"player_id": 4}]
+    landed_off = {1: True, 3: True}
+
+    free_agents, retired = _partition_retired(free, landed_off)
+
+    assert [p["player_id"] for p in free_agents] == [2, 4]
+    assert [p["player_id"] for p in retired] == [1, 3]
+    # order within each bucket follows the candidate order
+    assert free_agents[0]["player_id"] == 2
+    # untouched windows: unknown status stays with the free agents
+    assert all(p["player_id"] not in landed_off for p in free_agents)

@@ -430,6 +430,45 @@ async def _fetch_season_rosters(season_id: int, db: AsyncSession) -> dict[int, d
     return _store(key, roster)  # type: ignore[return-value]
 
 
+async def _player_landed_off(pids: list[int]) -> dict[int, bool]:
+    """Which players the league reports as inactive (retired / no longer on an
+    NHL roster), from the player-landing feed — cached per player and
+    fault-tolerant. Only players reported NOT active are flagged; anything
+    unresolved is left unflagged rather than mis-categorized."""
+    landed_off: dict[int, bool] = {}
+
+    async def one(pid: int) -> None:
+        cache_key = f"player-landing-{pid}"
+        cached = _cached(cache_key, get_settings().roster_cache_ttl)
+        if cached is not None:
+            if cached is True:
+                landed_off[pid] = True
+            return
+        try:
+            data = await _web_json(f"player/{pid}/landing")
+        except (HTTPException, httpx.HTTPError):
+            return
+        flag = data.get("isActive") is False
+        if flag:
+            landed_off[pid] = True
+        _store(cache_key, flag)
+
+    await asyncio.gather(*(one(p) for p in pids))
+    return landed_off
+
+
+def _partition_retired(
+    free: list[dict], landed_off: dict[int, bool]
+) -> tuple[list[dict], list[dict]]:
+    """Split a candidate list into active unsigned players vs. retired/off the
+    roster per the league's own player-landing status."""
+    free_agents: list[dict] = []
+    retired: list[dict] = []
+    for p in free:
+        (retired if landed_off.get(p["player_id"]) else free_agents).append(p)
+    return free_agents, retired
+
+
 @router.get("/free-agents")
 async def free_agents(
     limit: int = Query(60, ge=1, le=400),
@@ -497,18 +536,24 @@ async def free_agents(
                 "plus_minus": pm,
             }
         )
-        if len(free) >= limit:
+        if len(free) >= min(limit * 2, 400):
             break
+
+    landed_off = await _player_landed_off([p["player_id"] for p in free])
+    free_agents, retired = _partition_retired(free, landed_off)
 
     return {
         "as_of": datetime.now(UTC).isoformat(),
         "stats_season": stats_season,
         "roster_season": roster_season,
-        "count": len(free),
-        "free_agents": free,
+        "count": len(free_agents),
+        "free_agents": free_agents[:limit],
+        "retired_count": len(retired),
+        "retired": retired[:limit],
         "note": (
             "Players with NHL games last season who are not on any club's "
-            "official roster for this season. Derived live from club rosters."
+            "official roster for this season. Derived live from club rosters "
+            "and the league's own player status."
         ),
     }
 

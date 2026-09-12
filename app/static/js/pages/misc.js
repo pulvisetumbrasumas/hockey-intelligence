@@ -194,6 +194,9 @@
     ["G", 1, "Goaltenders"],
   ];
   const BENCH_SLOTS = 2;
+  const WING_MAP = { L: "LW", R: "RW" };
+  const posFor = (r) =>
+    r.role === "goalie" ? "G" : (WING_MAP[r.position] || r.position || "D");
 
   async function fantasy(ctx) {
     try {
@@ -201,7 +204,17 @@
       let preset = "standard";
       let tab = "skater";
       const saved = window.HI.store.get("roster", null);
-      const picks = saved && saved.picks && typeof saved.picks === "object" ? saved.picks : {};
+      const migratePicks = (p) => {
+        const n = {};
+        Object.entries(p).forEach(([k, v]) => {
+          const mk = WING_MAP[k] || k;
+          n[mk] = (n[mk] || []).concat(v || []);
+        });
+        return n;
+      };
+      const picks = saved && saved.picks && typeof saved.picks === "object"
+        ? migratePicks(saved.picks)
+        : {};
       const fmtS = (n) => (n == null ? "—" : (Number.isInteger(n) ? L(n) : n.toFixed(2)));
       const defaultPools = await Promise.all([
         window.HI.api("/api/fantasy/pool?stat_type=skater&preset=standard&limit=200"),
@@ -234,7 +247,7 @@
           window.HI.toast(row.name + " is already on your roster.");
           return;
         }
-        const pos = row.role === "goalie" ? "G" : (row.position || "D");
+        const pos = posFor(row);
         const benchFree = BENCH_SLOTS - (picks.BN || []).length;
         if (slotSpace(pos) > 0) {
           picks[pos] = picks[pos] || [];
@@ -272,7 +285,7 @@
       };
 
       const rowCell = (r) => {
-        const pos = r.role === "goalie" ? "G" : (r.position || "—");
+        const pos = posFor(r);
         const picked = drawn(String(r.player_id));
         return (
           '<div class="row fantasy-row' + (picked ? " picked" : "") + '" data-pid="' + r.player_id + '"' +
@@ -462,6 +475,7 @@
         '<div class="row wrap" style="gap:10px;margin-bottom:20px;">' +
         '<span class="pill-tag cyan">' + HI_(newsData.source || "Live") + "</span>" +
         '<span class="pill-tag gold">' + L(fa.count) + " unsigned · " + HI_(String(fa.stats_season).slice(0, 4)) + "–" + HI_(String(fa.stats_season).slice(4, 6)) + " NHL skaters</span>" +
+        '<span class="pill-tag red">' + L(fa.retired_count || 0) + " retired/off</span>" +
         '<span class="pill-tag">checked vs ' + HI_(String(fa.roster_season).slice(0, 4)) + "–" + HI_(String(fa.roster_season).slice(4, 6)) + " rosters</span>" +
         "</div>" +
 
@@ -473,6 +487,16 @@
           ? fa.free_agents.slice(0, 30).map(faRow).join("")
           : '<div class="empty"><h4>No unsigned players detected</h4></div>') +
         "</div></div>" +
+
+        (fa.retired && fa.retired.length
+          ? '<div class="section">' +
+            '<div class="head"><div><span class="eyebrow gold">Not returning</span>' +
+            '<h2>Retired / off NHL rosters</h2></div></div>' +
+            '<p class="dim" style="font-size:12px;margin:-4px 0 10px;">Reported inactive in the league’s player records — not unsigned free agents.</p>' +
+            '<div class="stack">' +
+            fa.retired.slice(0, 20).map(faRow).join("") +
+            "</div></div>"
+          : "") +
 
         '<div class="section">' +
         '<div class="head"><div><span class="eyebrow">Around the league</span>' +
