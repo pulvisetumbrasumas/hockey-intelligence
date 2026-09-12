@@ -8,6 +8,12 @@
 
   function LOGO(u) { return u || "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3C/svg%3E"; }
 
+  function addISO(iso, days) {
+    const d = new Date(iso + "T12:00:00Z");
+    d.setUTCDate(d.getUTCDate() + days);
+    return d.toISOString().slice(0, 10);
+  }
+
   /* ---------------- Schedule ---------------- */
   async function schedule(ctx) {
     try {
@@ -60,12 +66,28 @@
               box.innerHTML = "<div class='error-block'>" + HI_(err && err.message) + "</div>";
             }
           };
-          view.querySelector("#sched-today").addEventListener("click", () => show("today"));
-          view.querySelector("#sched-next").addEventListener("click", () => show("next"));
+          let current = data.date || iso;
+          view.querySelector("#sched-today").addEventListener("click", async () => {
+            const d = await window.HI.api("/api/schedule?date=today");
+            current = d.date;
+            show("today");
+          });
+          view.querySelector("#sched-next").addEventListener("click", async () => {
+            try {
+              const d = await window.HI.api("/api/schedule?date=" + encodeURIComponent(current));
+              const nxt = d.next_start_date || addISO(current, 1);
+              if (nxt <= current) { return; }
+              current = nxt;
+              await show(nxt);
+            } catch (err) {
+              const nxt = addISO(current, 1);
+              current = nxt;
+              await show(nxt);
+            }
+          });
           view.querySelector("#sched-prev").addEventListener("click", () => {
-            const d = new Date();
-            d.setDate(d.getDate() - 1);
-            show(d.toISOString().slice(0, 10));
+            current = addISO(current, -1);
+            show(current);
           });
         },
       };
