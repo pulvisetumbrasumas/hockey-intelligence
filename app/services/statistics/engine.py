@@ -97,25 +97,56 @@ _MIN_GAMES_IF_RATE = 30
 DIMENSIONS = {
     "offense": {
         "label": "Offense",
-        "metrics": ["goals", "assists", "points", "points_per_game"],
+        "metrics": [
+            "era_adjusted_points",
+            "points_per_game",
+            "era_adjusted_ppg",
+            "goals",
+            "assists",
+            "points",
+        ],
+    },
+    "two_way": {
+        "label": "Two-way",
+        "metrics": [
+            "plus_minus",
+            "plus_minus_per_game",
+            "takeaways",
+            "hits",
+            "blocked_shots",
+            "sh_points",
+        ],
     },
     "defense": {
-        "label": "Defense",
-        "metrics": ["plus_minus", "blocked_shots", "takeaways", "hits"],
+        "label": "Two-way",
+        "metrics": [
+            "plus_minus",
+            "plus_minus_per_game",
+            "takeaways",
+            "hits",
+            "blocked_shots",
+            "sh_points",
+        ],
     },
     "puck_skill": {
         "label": "Puck Skill",
-        "metrics": ["time_on_ice_per_game", "faceoff_win_pct", "shooting_pct"],
+        "metrics": ["shooting_pct", "faceoff_win_pct"],
     },
     "efficiency": {
         "label": "Efficiency",
-        "metrics": ["points_per_game", "shooting_pct", "faceoff_win_pct"],
+        "metrics": ["points_per_game", "shooting_pct"],
     },
     "durability": {
         "label": "Durability",
-        "metrics": ["games_played"],
+        "metrics": ["games_played", "seasons_played"],
     },
 }
+
+COMPARE_DEFAULT_DIMENSIONS = ["offense", "two_way", "puck_skill", "durability"]
+
+# faceoff_win_pct was seeded with a placeholder of exactly 0.5 for seasons the
+# provider did not report; treat that sentinel as "not tracked".
+_FACEOFF_SENTINEL = 0.5
 
 
 class StatisticsEngine:
@@ -323,64 +354,239 @@ class StatisticsEngine:
     ) -> dict:
         """Multi-dimensional player comparison.
 
-        Returns evidence per dimension rather than a single ranking.
+        Returns evidence per dimension rather than a single ranking. Scoring is
+        re-based to a common era so raw totals from different scoring eras are
+        not compared unfairly, and the two-way dimension reports possession and
+        physicality counters where the NHL tracked them (2007-08 onward).
         """
-        dims = dimensions or ["offense", "defense", "puck_skill", "durability"]
-        players_stat = {}
+        dims = dimensions or COMPARE_DEFAULT_DIMENSIONS
+        league_ppg = await self._league_ppg_by_season()
+        profiles: dict[int, dict] = {}
         for pid in player_ids:
-            players_stat[pid] = await self.get_player_career_stats(pid)
+            profiles[pid] = await self._player_compare_profile(pid, league_ppg)
 
-        comparison = {
+        comparison: dict = {
             "dimensions": dims,
             "players": [],
             "notes": [],
+            "era": self._era_note(league_ppg),
         }
 
         for pid in player_ids:
             profile = await self.session.get(Player, pid)
-            rs = players_stat[pid].get("regular_season") or {}
+            rs = profiles[pid]
+            rs["name"] = profile.full_name if profile else str(pid)
             comparison["players"].append(
                 {
                     "player_id": pid,
-                    "name": profile.full_name if profile else str(pid),
+                    "name": rs["name"],
                     "position": profile.position_code if profile else None,
-                    "games_played": rs.get("games_played"),
-                    "goals": rs.get("goals"),
-                    "assists": rs.get("assists"),
-                    "points": rs.get("points"),
-                    "points_per_game": rs.get("points_per_game"),
-                    "plus_minus": rs.get("plus_minus"),
-                    "seasons_played": rs.get("seasons_played"),
-                    "power_play_goals": rs.get("power_play_goals"),
-                    "shorthanded_goals": rs.get("shorthanded_goals"),
-                    "game_winning_goals": rs.get("game_winning_goals"),
+                    "games_played": round(rs["games_played"], 1),
+                    "goals": round(rs["goals"], 1),
+                    "assists": round(rs["assists"], 1),
+                    "points": round(rs["points"], 1),
+                    "points_per_game": rs["points_per_game"],
+                    "era_adjusted_points": rs["era_adjusted_points"],
+                    "era_adjusted_ppg": rs["era_adjusted_ppg"],
+                    "pace_points_82": rs["pace_points_82"],
+                    "plus_minus": rs["plus_minus"],
+                    "plus_minus_per_game": rs["plus_minus_per_game"],
+                    "penalty_minutes_per_game": rs["penalty_minutes_per_game"],
+                    "seasons_played": rs["seasons_played"],
+                    "power_play_goals": round(rs["pp_goals"], 1),
+                    "shorthanded_goals": round(rs["sh_goals"], 1),
+                    "shorthanded_points": round(rs["sh_points"], 1),
+                    "game_winning_goals": round(rs["game_winning_goals"], 1),
+                    "shooting_pct": rs["shooting_pct"],
+                    "takeaways": rs["takeaways"],
+                    "hits": rs["hits"],
+                    "blocked_shots": rs["blocked_shots"],
+                    "tracked_seasons": rs["tracked_seasons"],
                 }
             )
 
-        # Per-dimension evidence
         evidence = {}
         for dim in dims:
-            evidence[dim] = self._dimension_evidence(player_ids, players_stat, dim)
+            evidence[dim] = self._dimension_evidence(player_ids, profiles, dim)
 
         comparison["evidence"] = evidence
-        comparison["notes"] = self._comparison_notes(player_ids, players_stat)
+        comparison["notes"] = self._comparison_notes(player_ids, profiles)
+        comparison["data_notes"] = self._data_notes(player_ids, profiles)
         return comparison
 
-    def _dimension_evidence(self, player_ids, players_stat, dimension: str) -> dict:
+    async def _league_ppg_by_season(self) -> dict[int, float]:
+        """League-wide points-per-game for every tracked season.
+
+        Used to re-base a player's scoring to a common era: each season's
+        points are scaled by benchmark / season_league_ppg so a 1970s goal is
+        not treated the same as a 2020s goal when comparing careers.
+        """
+        result = await self.session.execute(
+            select(
+                PlayerSeasonStats.season_id,
+                func.sum(PlayerSeasonStats.points),
+                func.sum(PlayerSeasonStats.goals),
+                func.sum(PlayerSeasonStats.assists),
+                func.sum(PlayerSeasonStats.games_played),
+            )
+            .where(
+                PlayerSeasonStats.game_type == 2,
+                PlayerSeasonStats.games_played > 0,
+            )
+            .group_by(PlayerSeasonStats.season_id)
+        )
+        out: dict[int, float] = {}
+        for season_id, pts, goals, assists, gp in result.all():
+            points = pts if pts is not None else (goals or 0) + (assists or 0)
+            if gp:
+                out[season_id] = points / gp
+        return out
+
+    async def _player_compare_profile(
+        self, player_id: int, league_ppg: dict[int, float]
+    ) -> dict:
+        result = await self.session.execute(
+            select(PlayerSeasonStats)
+            .where(
+                PlayerSeasonStats.player_id == player_id,
+                PlayerSeasonStats.game_type == 2,
+            )
+            .order_by(PlayerSeasonStats.season_id)
+        )
+        rows = result.scalars().all()
+        played = [r for r in rows if (r.games_played or 0) > 0]
+        games = round(sum(r.games_played or 0 for r in played), 3)
+        goals = sum(r.goals or 0 for r in played)
+        assists = sum(r.assists or 0 for r in played)
+        points = goals + assists
+        seasons = len(played)
+
+        benchmark = (league_ppg.get(max(league_ppg) or 0) or 1.0) if league_ppg else 1.0
+        era_points = 0.0
+        era_gp = 0.0
+        for r in played:
+            league = league_ppg.get(r.season_id) if r.season_id is not None else None
+            factor = (benchmark / league) if league else 1.0
+            season_points = (r.points if r.points is not None
+                             else (r.goals or 0) + (r.assists or 0))
+            era_points += season_points * factor
+            era_gp += r.games_played or 0
+
+        tracked = [r for r in played if (r.takeaways or 0) > 0]
+        plus_minus = sum(r.plus_minus or 0 for r in played)
+        sh_points = sum(r.sh_points or 0 for r in played)
+        pp_goals = sum(r.pp_goals or 0 for r in played)
+        sh_goals = sum(r.sh_goals or 0 for r in played)
+        gwg = sum(r.game_winning_goals or 0 for r in played)
+        pim = sum(r.penalty_minutes or 0 for r in played)
+
+        shots = sum(r.shots or 0 for r in played)
+        shooting_seen = [
+            (r.shooting_pct or 0) for r in played if r.shooting_pct
+        ]
+        if shots > 0:
+            shooting_pct = round(goals / shots, 4)
+        elif shooting_seen:
+            shooting_pct = round(sum(shooting_seen) / len(shooting_seen), 4)
+        else:
+            shooting_pct = None
+
+        faceoff = self._avg_avail(
+            [
+                r.faceoff_win_pct
+                for r in played
+                if r.faceoff_win_pct is not None
+                and r.faceoff_win_pct != _FACEOFF_SENTINEL
+            ],
+            None,
+        )
+        faceoff = round(faceoff, 4) if faceoff is not None else None
+
+        takeaways = self._sum_avail([r.takeaways for r in played])
+        hits = self._sum_avail([r.hits for r in played])
+        blocked = self._sum_avail([r.blocked_shots for r in played])
+
+        ppg = round(points / games, 4) if games else None
+        era_ppg = round(era_points / era_gp, 4) if era_gp else None
+        return {
+            "games_played": games,
+            "goals": goals,
+            "assists": assists,
+            "points": points,
+            "points_per_game": ppg,
+            "era_adjusted_points": round(era_points, 1),
+            "era_adjusted_ppg": era_ppg,
+            "pace_points_82": round((points / games) * 82, 1) if games else None,
+            "plus_minus": plus_minus,
+            "plus_minus_per_game": round(plus_minus / games, 4) if games else None,
+            "penalty_minutes_per_game": round(pim / games, 4) if games else None,
+            "seasons_played": seasons,
+            "pp_goals": pp_goals,
+            "sh_goals": sh_goals,
+            "sh_points": sh_points,
+            "game_winning_goals": gwg,
+            "shooting_pct": shooting_pct,
+            "faceoff_win_pct": faceoff,
+            "takeaways": takeaways if tracked else None,
+            "hits": hits if tracked else None,
+            "blocked_shots": blocked if tracked else None,
+            "tracked_seasons": len(tracked),
+            "penalty_minutes": pim,
+        }
+
+    @staticmethod
+    def _era_note(league_ppg: dict[int, float]) -> dict:
+        bench = max(league_ppg) if league_ppg else None
+        return {
+            "benchmark_season": bench,
+            "note": (
+                f"Scoring re-based to {bench} league pace when the scoring era "
+                "differs between players."
+                if bench
+                else "League scoring baseline unavailable."
+            ),
+        }
+
+    def _data_notes(self, player_ids: list[int], profiles: dict[int, dict]) -> list[str]:
+        notes = []
+        for pid in player_ids:
+            tracked = profiles[pid]["tracked_seasons"] or 0
+            seasons = profiles[pid]["seasons_played"] or 0
+            if seasons > 0 and tracked < seasons:
+                notes.append(
+                    f"{profiles[pid]['name'] or pid} has takeaways/hits/blocked shots "
+                    f"tracked for {tracked} of their {seasons} "
+                    "seasons — the NHL only tracked those counters from 2007-08, so "
+                    "their earlier seasons read as blanks, not zeros."
+                )
+        return notes
+
+    @staticmethod
+    def _sum_avail(values: list) -> float | None:
+        seen = [v for v in values if v is not None]
+        return round(sum(seen), 1) if seen else None
+
+    @staticmethod
+    def _avg_avail(values: list, default=None) -> float | None:
+        seen = [v for v in values if v is not None]
+        return round(sum(seen) / len(seen), 4) if seen else default
+
+    def _dimension_evidence(self, player_ids, profiles: dict[int, dict], dimension: str) -> dict:
         base_metrics = {
-            "offense": ["goals", "assists", "points", "points_per_game"],
-            "defense": ["plus_minus"],
-            "puck_skill": ["shooting_pct"],
-            "durability": ["games_played", "seasons_played"],
+            "offense": ["era_adjusted_points", "points_per_game", "era_adjusted_ppg", "goals", "assists", "points"],
+            "two_way": ["plus_minus", "plus_minus_per_game", "takeaways", "hits", "blocked_shots", "sh_points"],
+            "defense": ["plus_minus", "plus_minus_per_game", "takeaways", "hits", "blocked_shots", "sh_points"],
+            "puck_skill": ["shooting_pct", "faceoff_win_pct"],
             "efficiency": ["points_per_game", "shooting_pct"],
+            "durability": ["games_played", "seasons_played"],
         }
         metrics = base_metrics.get(dimension, ["points"])
         leaders = {}
         for m in metrics:
             values = {}
             for pid in player_ids:
-                rs = (players_stat[pid].get("regular_season") or {}).get(m, 0)
-                values[pid] = round(rs, 3) if rs is not None else None
+                v = profiles[pid].get(m)
+                values[pid] = round(v, 4) if isinstance(v, float) else v
             leaders[m] = values
         return {
             "metric": metrics,
@@ -388,14 +594,11 @@ class StatisticsEngine:
             "interpretation": self._dimension_interpretation(dimension),
         }
 
-    def _comparison_notes(self, player_ids, players_stat) -> list[str]:
+    def _comparison_notes(self, player_ids, profiles: dict[int, dict]) -> list[str]:
         notes = []
         if len(player_ids) < 2:
             return notes
-        stats = [
-            (players_stat[pid].get("regular_season") or {}).get("points") or 0
-            for pid in player_ids
-        ]
+        stats = [(profiles[pid].get("points") or 0) for pid in player_ids]
         if len(set(stats)) == 1:
             notes.append(
                 "The available data does not establish a meaningful difference in "
@@ -407,23 +610,28 @@ class StatisticsEngine:
     def _dimension_interpretation(dimension: str) -> str:
         return {
             "offense": (
-                "Raw offensive production. Which player generated more goals, "
-                "assists, and points?"
+                "Scoring. Era-adjusted points re-base each season's production to "
+                "modern league scoring pace, so a 2002 season is compared fairly "
+                "against a 2025 season instead of raw totals."
+            ),
+            "two_way": (
+                "The all-situation game. Plus/minus while on ice, takeaways, hits, "
+                "blocked shots and short-handed output. Takeaway/hit/blocked "
+                "counters exist from 2007-08 — blanks predate tracking."
             ),
             "defense": (
-                "Available defensive evidence. Plus/minus reflects goal "
-                "differential while on ice; it does not fully measure defensive "
-                "reads or positioning."
+                "The all-situation game. Plus/minus while on ice, takeaways, hits, "
+                "blocked shots and short-handed output. Takeaway/hit/blocked "
+                "counters exist from 2007-08 — blanks predate tracking."
             ),
             "puck_skill": (
-                "Puck skill proxies available in the data. Shooting percentage, "
-                "possession-based time on ice, and faceoff performance where "
-                "present."
+                "Rate quality: shooting accuracy and (where tracked) faceoff win "
+                "rate — freed from season length."
             ),
             "durability": "Games played and seasons sustained at the NHL level.",
             "efficiency": (
-                "Production relative to opportunity: points per game and scoring "
-                "efficiency."
+                "Production relative to opportunity: points per game and shooting "
+                "percentage."
             ),
         }.get(
             dimension,

@@ -98,6 +98,32 @@ class NHLDataProvider(HockeyDataProvider):
         )
         return data.get("data", []), data.get("total", 0)
 
+    async def get_skater_realtime_stats(
+        self, season_id: int, game_type: int = 2, start: int = 0, limit: int = 100
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Season-level possession, physicality and discipline counters.
+
+        Backed by the NHL stats ``skater/realtime`` endpoint, which reports
+        takeaways, giveaways, hits, blocked shots, missed shots and shot
+        attempts. Those counters were never tracked for the pre-2007 era, so
+        older seasons return no rows.
+        """
+        cayenne = (
+            f"seasonId<={season_id} and seasonId>={season_id} and gameTypeId={game_type}"
+        )
+        data = await self._stats_get(
+            "skater/realtime",
+            {
+                "isAggregate": "false",
+                "isGame": "false",
+                "sort": self._sort("timeOnIcePerGame", "DESC"),
+                "start": start,
+                "limit": limit,
+                "cayenneExp": cayenne,
+            },
+        )
+        return data.get("data", []), data.get("total", 0)
+
     async def get_goalie_stats(
         self, season_id: int, game_type: int = 2, start: int = 0, limit: int = 100
     ) -> tuple[list[dict[str, Any]], int]:

@@ -163,18 +163,62 @@
 
   function renderComparison(res) {
     const players = res.players || [];
-    const table =
-      '<table class="dtable"><thead><tr><th>Metric</th>' +
-      players.map((p, i) => "<th class='num'>" + HI_(p.name) + "</th>").join("") +
-      "</tr></thead><tbody>" +
-      ["games_played", "goals", "assists", "points", "points_per_game", "plus_minus", "seasons_played", "power_play_goals", "game_winning_goals"]
-        .map((m) =>
-          "<tr><td>" + HI_(m.replace(/_/g, " ")) + "</td>" +
-          players.map((p) => "<td class='num'>" + (p[m] != null && !Number.isInteger(p[m]) ? Number(p[m]).toFixed(3) : L(p[m])) + "</td>").join("") +
-          "</tr>"
-        ).join("") +
-      "</tbody></table>";
+    const fmt = (v) =>
+      v == null || v === "" ? "<span class='dim'>—</span>"
+      : Number.isInteger(v) ? L(v)
+      : L(Number(v.toFixed(3)));
 
+    const LABELS = {
+      offense: "Offense", two_way: "Two-way", defense: "Two-way",
+      puck_skill: "Puck skill", efficiency: "Efficiency", durability: "Durability",
+    };
+    const META = [
+      ["games_played", "Games played"],
+      ["points", "Points"],
+      ["era_adjusted_points", "Era-adjusted points"],
+      ["pace_points_82", "Pace (pts / 82)"],
+      ["points_per_game", "Points per game"],
+      ["plus_minus", "Plus/minus"],
+      ["seasons_played", "Seasons played"],
+    ];
+
+    const metaRow = (m, label) =>
+      "<tr><td>" + HI_(label) + "</td>" +
+      players.map((p) => "<td class='num'>" + fmt(p[m]) + "</td>").join("") +
+      "</tr>";
+
+    const header = "<thead><tr><th>Metric</th>" +
+      players.map((p) => "<th class='num'>" + HI_(p.name) + "</th>").join("") +
+      "</tr></thead>";
+
+    function evidenceRow(m, label, ev) {
+      const values = (ev.values && ev.values[m]) || {};
+      return "<tr><td>" + HI_(label) + "</td>" +
+        players.map((p) => "<td class='num'>" + fmt(values[p.player_id]) + "</td>").join("") +
+        "</tr>";
+    }
+
+    const dimsBlocks = (res.dimensions || []).map((d) => {
+      const ev = (res.evidence && res.evidence[d]) || {};
+      const skip = new Set(["era_adjusted_points", "points_per_game", "era_adjusted_ppg",
+        "goals", "assists", "points", "games_played", "seasons_played"]);
+      const rows = (ev.metric || [])
+        .filter((m) => !skip.has(m))
+        .map((m) => evidenceRow(m, m.replace(/_/g, " "), ev))
+        .join("");
+      if (!rows) return "";
+      return "<tr class='dim-cap'><td colspan='" + (players.length + 1) + "'>" +
+        "<b style='color:var(--cyan);'>" + HI_(LABELS[d] || d) + "</b></td></tr>" + rows;
+    }).join("");
+
+    const table = "<table class='dtable'>" + header + "<tbody>" +
+      META.map(([m, label]) => metaRow(m, label)).join("") +
+      dimsBlocks + "</tbody></table>";
+
+    const era = res.era ? '<p class="panel-tip" style="margin:10px 0 0;">' + HI_(res.era.note) + "</p>" : "";
+    const dataNotes = (res.data_notes || []).map((n) =>
+      '<p class="panel-tip" style="margin:8px 0 0;">' + HI_(n) + "</p>"
+    ).join("");
     const notes = (res.notes || []).length
       ? '<p class="panel-tip" style="margin:12px 0;">' + res.notes.map(HI_).join(" ") + "</p>"
       : "";
@@ -184,16 +228,16 @@
       '<div class="card"><h3>Dimension radar</h3>' +
       '<div class="radar-wrap"><canvas id="radar" width="320" height="320"></canvas></div>' +
       '<div style="margin-top:6px;" id="radar-legend"></div>' +
-      '<p class="panel-tip" style="margin-top:12px;">Axes normalize each player’s real stats against the group. Axes without usable data are omitted.</p>' +
+      '<p class="panel-tip" style="margin-top:12px;">Each axis is a dimension. Within an axis, every metric is scaled against the group so mixed units do not skew the shape; missing data omits that metric.</p>' +
       "</div>" +
       '<div class="stack">' +
-      '<div class="card"><h3>Career evidence</h3>' + table + notes + "</div>" +
+      '<div class="card"><h3>Career evidence</h3>' + table + era + dataNotes + notes + "</div>" +
       '<div class="card"><h3>How to read this</h3>' +
       "<p style='margin:0;font-size:13.5px;color:var(--text-2);'>" +
       (res.dimensions || []).map((d) => {
         const ev = (res.evidence && res.evidence[d]) || {};
-        return "<div style='margin-bottom:10px;'><b style='color:var(--cyan);text-transform:capitalize;'>" + HI_(d) + "</b> — " +
-          HI_(ev.interpretation || ev.metric || "") + "</div>";
+        return "<div style='margin-bottom:10px;'><b style='color:var(--cyan);text-transform:capitalize;'>" + HI_(LABELS[d] || d) + "</b> — " +
+          HI_(ev.interpretation || "") + "</div>";
       }).join("") +
       "</p></div>" +
       "</div></div>"
@@ -210,23 +254,31 @@
     });
     if (!dims.length) { return; }
 
-    /* normalized 0..100 score per player per dimension */
+    /* normalized 0..100 score per player per dimension.
+       Within each dimension every metric is scaled against the group's best
+       before averaging, so mixed units (points totals vs points-per-game) do
+       not distort the shape; metrics without usable data are skipped. */
     const scores = {};
     players.forEach((p) => {
       scores[p.player_id] = {};
       dims.forEach((d) => {
         const ev = evidence[d] || {};
-        const raw = meanOf(ev, p.player_id);
-        scores[p.player_id][d] = raw;
-      });
-    });
-    dims.forEach((d) => {
-      const max = Math.max.apply(null, players.map((p) => scores[p.player_id][d] || 0));
-      if (max > 0) {
-        players.forEach((p) => {
-          scores[p.player_id][d] = Math.round(((scores[p.player_id][d] || 0) / max) * 100);
+        const comps = Object.keys(ev.values || {}).filter((m) =>
+          players.some((q) => ev.values[m] && ev.values[m][q.player_id] != null));
+        if (!comps.length) { scores[p.player_id][d] = 0; return; }
+        let acc = 0, n = 0;
+        comps.forEach((m) => {
+          const vals = ev.values[m];
+          const mx = Math.max.apply(null, players.map((q) =>
+            vals[q.player_id] != null ? Number(vals[q.player_id]) : -Infinity));
+          if (!(mx > 0)) return;
+          const v = vals[p.player_id];
+          if (v == null) return;
+          acc += Math.max(0, Number(v)) / mx;
+          n += 1;
         });
-      }
+        scores[p.player_id][d] = n ? Math.round((acc / n) * 100) : 0;
+      });
     });
 
     const ctx = canvas.getContext("2d");
@@ -312,14 +364,6 @@
 
   function someValue(ev, dim, p) {
     return Object.values(ev.values || {}).some((m) => m[p.player_id] != null);
-  }
-
-  function meanOf(ev, pid) {
-    const vals = Object.values(ev.values || {})
-      .map((m) => m[pid])
-      .filter((v) => v != null && !isNaN(v));
-    if (!vals.length) return 0;
-    return vals.reduce((a, b) => a + Number(b), 0) / vals.length;
   }
 
   window.HI_Compare = compare;

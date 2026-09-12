@@ -31,7 +31,7 @@ class Settings(BaseSettings):
     all_star_date: str = "2027-02-06"
 
     # Data Seeding
-    data_seed_seasons: str = "20232024,20242025"
+    data_seed_seasons: str = "20232024,20242025,20252026"
 
     # Application
     app_host: str = "0.0.0.0"

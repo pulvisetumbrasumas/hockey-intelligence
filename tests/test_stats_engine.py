@@ -33,10 +33,18 @@ async def _add_skater(session, pid: int, season: int, game_type: int = 2, **kw) 
             plus_minus=kw.get("plus_minus", 0),
             penalty_minutes=kw.get("penalty_minutes", 0),
             pp_goals=kw.get("pp_goals", 0),
+            pp_points=kw.get("pp_points", 0),
             sh_goals=kw.get("sh_goals", 0),
+            sh_points=kw.get("sh_points", 0),
             game_winning_goals=kw.get("game_winning_goals", 0),
             ot_goals=kw.get("ot_goals", 0),
             shots=kw.get("shots", 0),
+            shooting_pct=kw.get("shooting_pct"),
+            faceoff_win_pct=kw.get("faceoff_win_pct"),
+            takeaways=kw.get("takeaways"),
+            giveaways=kw.get("giveaways"),
+            hits=kw.get("hits"),
+            blocked_shots=kw.get("blocked_shots"),
         )
     )
     await session.flush()
@@ -181,6 +189,68 @@ async def test_compare_players_dimensions_param(session):
         [1, 2], ["durability", "efficiency"]
     )
     assert list(result_all["evidence"].keys()) == ["durability", "efficiency"]
+
+
+async def test_compare_players_default_dimensions_include_two_way(session):
+    await _add_player(session, 1, "Alpha Player")
+    await _add_player(session, 2, "Beta Player")
+    await _add_skater(session, 1, 20222023, games_played=82, goals=40, assists=40, takeaways=50, hits=90)
+    await _add_skater(session, 2, 20222023, games_played=82, goals=30, assists=30, takeaways=30, hits=40)
+
+    result = await StatisticsEngine(session).compare_players([1, 2])
+    assert result["dimensions"] == ["offense", "two_way", "puck_skill", "durability"]
+    assert "two_way" in result["evidence"]
+    tw = result["evidence"]["two_way"]["values"]
+    assert tw["takeaways"] == {1: 50.0, 2: 30.0}
+    assert tw["hits"] == {1: 90.0, 2: 40.0}
+
+
+async def test_compare_players_era_adjusts_scoring(session):
+    await _add_player(session, 1, "Old School")
+    await _add_player(session, 2, "Modern Star")
+    await _add_player(session, 3, "Filler")
+    await _add_skater(session, 1, 20022003, games_played=82, goals=40, assists=40)
+    await _add_skater(session, 3, 20022003, games_played=82, goals=0, assists=0)
+    await _add_skater(session, 2, 20182019, games_played=82, goals=40, assists=40)
+
+    result = await StatisticsEngine(session).compare_players([1, 2])
+
+    assert "era" in result
+    assert result["era"]["benchmark_season"] == 20182019
+    ea = {p["player_id"]: p["era_adjusted_points"] for p in result["players"]}
+    # 2002-03 league paced 80 pts in 164 GP (0.488 ppg) vs 2018-19 (0.976 ppg):
+    # old-school scoring is re-based upward ~2x.
+    assert ea[1] == 160.0
+    assert ea[2] == 80.0
+    values = result["evidence"]["offense"]["values"]["era_adjusted_points"]
+    assert values[1] == 160.0
+    assert values[2] == 80.0
+
+
+async def test_compare_players_untracked_two_way_shows_blanks(session):
+    await _add_player(session, 1, "Pre Tracking")
+    await _add_player(session, 2, "Post Tracking")
+    await _add_skater(session, 1, 19951996, games_played=82, goals=40, assists=40)
+    await _add_skater(session, 2, 20182019, games_played=82, goals=40, assists=40, takeaways=70, hits=120)
+
+    result = await StatisticsEngine(session).compare_players([1, 2])
+
+    assert result["players"][0]["takeaways"] is None
+    assert result["players"][0]["tracked_seasons"] == 0
+    assert result["players"][1]["takeaways"] == 70.0
+    assert len(result["data_notes"]) == 1
+    assert "2007-08" in result["data_notes"][0]
+
+
+async def test_compare_players_faceoff_sentinel_blanked(session):
+    await _add_player(session, 1, "Alpha Player")
+    await _add_player(session, 2, "Beta Player")
+    await _add_skater(session, 1, 20022003, games_played=82, goals=40, assists=40, faceoff_win_pct=0.5)
+    await _add_skater(session, 2, 20022003, games_played=82, goals=30, assists=30, faceoff_win_pct=0.5)
+
+    result = await StatisticsEngine(session).compare_players([1, 2])
+    fw = result["evidence"]["puck_skill"]["values"]["faceoff_win_pct"]
+    assert fw == {1: None, 2: None}
 
 
 async def test_thread_id_zero_skaters_only(session):

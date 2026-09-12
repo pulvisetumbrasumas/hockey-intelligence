@@ -50,6 +50,7 @@ class DataSeeder:
             stats.update(await self.import_seasons(session))
             for season_id in target_seasons:
                 stats.update(await self.import_season_stats(session, season_id))
+            stats.update(await self.import_realtime_stats(session, target_seasons))
             stats.update(await self.import_missing_bios(session))
             stats.update(await self.import_playoff_stats(session, target_seasons))
             await session.commit()
@@ -202,6 +203,48 @@ class DataSeeder:
             return {"bios": 0}
         ids = [p.id for p in players]
         return await self.import_player_bios(session, ids)
+
+    async def import_realtime_stats(
+        self, session: AsyncSession, seasons: list[int]
+    ) -> dict:
+        """Backfill possession/physicality counters from ``skater/realtime``.
+
+        The summary endpoints do not report takeaways, giveaways, hits or
+        blocked shots; the realtime endpoint does. These counters were never
+        tracked before the 2007-08 season, so older seasons return no rows and
+        the existing stats are left untouched.
+        """
+        counts = {"takeaways": 0, "giveaways": 0, "hits": 0, "blocked_shots": 0}
+        limit = 200
+        for season_id in seasons:
+            start = 0
+            while True:
+                rows, total = await self.provider.get_skater_realtime_stats(
+                    season_id, 2, start, limit
+                )
+                for s in rows:
+                    stat = await self._get_or_create_stat(
+                        session, s.get("playerId"), season_id, 2, PlayerSeasonStats
+                    )
+                    if stat is None:
+                        continue
+                    for src, key in (
+                        ("takeaways", "takeaways"),
+                        ("giveaways", "giveaways"),
+                        ("hits", "hits"),
+                        ("blocked_shots", "blockedShots"),
+                    ):
+                        if s.get(key) is not None:
+                            setattr(stat, src, s.get(key))
+                            counts[src] += 1
+                if not rows or start + len(rows) >= total:
+                    break
+                start += len(rows)
+        await session.flush()
+        await self._record_import(
+            session, "realtime_stats", counts["takeaways"], url="skater/realtime"
+        )
+        return counts
 
     async def import_playoff_stats(
         self, session: AsyncSession, seasons: list[int]
