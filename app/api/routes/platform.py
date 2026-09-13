@@ -13,7 +13,9 @@ from app.core.config import get_settings
 from app.database.connection import get_db
 from app.models import Champion, PlayoffSeries, Player, PlayerSeasonStats, Season, Team
 from app.models.stats_team import TeamSeasonStats
+from app.schemas.simulation import SimSeasonRequest
 from app.services.images import team_logo_url
+from app.services.statistics import simulation as sim
 from app.services.statistics.engine import FANTASY_PRESETS, StatisticsEngine
 
 router = APIRouter(prefix="/api", tags=["platform"])
@@ -556,6 +558,39 @@ async def free_agents(
             "and the league's own player status."
         ),
     }
+
+
+@router.get("/simulation/shop")
+async def simulation_shop(
+    db: AsyncSession = Depends(get_db),
+):
+    """Buy-then-play toy: chance-style prices for players and teams.
+
+    Not betting — the percentages are game-level Poisson estimates from last
+    season's rates, priced in an arbitrary in-app budget for the simulator.
+    """
+    return await sim.build_shop(db, _stats_season_id())
+
+
+@router.post("/simulation/season")
+async def simulation_season(
+    body: SimSeasonRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """Play a compressed 62-game regular season for the purchased stable."""
+    try:
+        return await sim.run_season(
+            db,
+            _stats_season_id(),
+            body.skaters,
+            body.goalies,
+            body.teams,
+            seed=body.seed,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(
+            status_code=502, detail=f"Simulation failed: {exc}"
+        ) from exc
 
 
 @router.get("/fantasy/pool")

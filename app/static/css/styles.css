@@ -1141,3 +1141,39 @@ select.field option { background: #0a0f1c; color: var(--text); }
 .legend i.dot.cup { background: rgba(217, 178, 106, 0.75); }
 .legend i.dot.final { background: var(--gold); border-radius: 50%; }
 .legend i.dot.conf { background: rgba(53, 215, 255, 0.55); }
+
+/* ---------- Simulation ---------- */
+.sim-card {
+  flex: 0 1 260px;
+  min-width: 250px;
+  display: flex;
+  flex-direction: column;
+}
+.sim-card.owned { border-color: rgba(53, 215, 255, 0.35); background: rgba(53, 215, 255, 0.03); }
+.sim-name { font-size: 13.5px; }
+.price {
+  font-weight: 700;
+  font-size: 17px;
+  color: var(--gold);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.sim-probs { margin-top: 10px; display: flex; flex-direction: column; gap: 4px; }
+.prob-row { display: flex; align-items: center; gap: 6px; }
+.track {
+  flex: 1;
+  height: 4px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.06);
+  overflow: hidden;
+}
+.track span { display: block; height: 100%; border-radius: 3px; background: var(--gold); }
+.size { font-size: 12px; color: var(--text-2); }
+.size b { color: var(--text); font-variant-numeric: tabular-nums; }
+.sim-port { flex: 1 1 240px; min-width: 240px; }
+.sim-port .gain { margin: 6px 0; font-size: 30px; }
+.gain.pos { color: var(--green, #35d27f); }
+.gain.neg { color: var(--red); }
+.sim-playoff td { background: rgba(53, 215, 255, 0.045); }
+.sim-owned td { background: rgba(217, 178, 106, 0.10); }
+.dtable .pts b { color: var(--text); }
